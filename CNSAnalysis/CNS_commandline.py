@@ -157,10 +157,11 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
     #FIXME add sort function
 
 @begin.subcommand
-def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_length, concat_size, consensus_tree):
+def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_length, concat_size, consensus_tree, bootstrapped_distance, feature_file, reference_species, feature_type):
     min_block_length = int(min_block_length)
     consensus_tree = int(consensus_tree)
     concat_size = int(concat_size)
+    bootstrapped_distance = int(bootstrapped_distance)
     try:
         os.mkdir('./maf_trees')
     except:
@@ -182,32 +183,32 @@ def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_
         input.file=./out_maf.maf
         input.format=Maf
         output.log=out.log
-        maf.filter=\
-            Subset(\
-                    strict=yes,\
-                    keep=no,\
-                    species=(%s),\
-                    remove_duplicates=yes),\
-            MaskFilter(species=(%s)),\
-            MinBlockLength(min_length=%d), \
-            Merge(species=(%s)),\
-            Concatenate(minimum_size=%d),\
-            RemoveEmptySequences(),\
-            DistanceEstimation(\
-                    method=ml,\
-                    model=GTR,\
-                    gap_option=no_gap,\
-                    parameter_estimation=initial,\
-                    gaps_as_unresolved=yes,\
-                    unresolved_as_gap=yes,\
-                    extended_names=no),\
-            DistanceBasedPhylogeny(\
-                    method=bionj,\
-                    dist_mat=MLDistance),\
-            OutputTrees(\
-                    tree=BioNJ,\
-                    file=./maf_trees/trees_%d.nwk,\
-                    compression=none,\
+        maf.filter=\\
+            Subset(\\
+                    strict=yes,\\
+                    keep=no,\\
+                    species=(%s),\\
+                    remove_duplicates=yes),\\
+            MaskFilter(species=(%s)),\\
+            MinBlockLength(min_length=%d), \\
+            Merge(species=(%s)),\\
+            Concatenate(minimum_size=%d),\\
+            RemoveEmptySequences(),\\
+            DistanceEstimation(\\
+                    method=ml,\\
+                    model=GTR,\\
+                    gap_option=no_gap,\\
+                    parameter_estimation=initial,\\
+                    gaps_as_unresolved=no,\\
+                    unresolved_as_gap=yes,\\
+                    extended_names=yes),\\
+            DistanceBasedPhylogeny(\\
+                    method=bionj,\\
+                    dist_mat=MLDistance),\\
+            OutputTrees(\\
+                    tree=BioNJ,\\
+                    file=./maf_trees/trees_%d.nwk,\\
+                    compression=none,\\
                     strip_names=yes)
                 """%(','.join(all_species),','.join(all_species),min_block_length,','.join(all_species),concat_size,i))
             subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
@@ -251,34 +252,70 @@ def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_
         input.file=./merged.maf
         input.format=Maf
         output.log=out.log
-        maf.filter=\
-            Subset(\
-                    strict=yes,\
-                    keep=no,\
-                    species=(%s),\
-                    remove_duplicates=yes),\
-            MaskFilter(species=(%s)),\
-            MinBlockLength(min_length=%d), \
-            Merge(species=(%s)),\
-            Concatenate(minimum_size=1000000000000),\
-            DistanceEstimation(\
-                    method=ml,\
-                    model=GTR,\
-                    gap_option=no_gap,\
-                    parameter_estimation=initial,\
-                    gaps_as_unresolved=yes,\
-                    unresolved_as_gaps=yes,\
-                    extended_names=no),\
-            DistanceBasedPhylogeny(\
-                    method=bionj,\
-                    dist_mat=MLDistance),\
-            OutputTrees(\
-                    tree=BioNJ,\
-                    file=./maf_trees/output_tree_consensus.nh,\
-                    compression=none,\
+        maf.filter=\\
+            Subset(\\
+                    strict=yes,\\
+                    keep=no,\\
+                    species=(%s),\\
+                    remove_duplicates=yes),\\
+            MaskFilter(species=(%s)),\\
+            MinBlockLength(min_length=%d), \\%s
+            Merge(species=(%s)),\\
+            Concatenate(minimum_size=1000000000000),\\%s
+            DistanceEstimation(\\
+                    method=ml,\\
+                    model=GTR,\\
+                    gap_option=no_gap,\\
+                    parameter_estimation=initial,\\
+                    gaps_as_unresolved=no,\\
+                    unresolved_as_gaps=yes,\\
+                    extended_names=yes),\\%s
+            DistanceBasedPhylogeny(\\
+                    method=bionj,\\
+                    dist_mat=MLDistance),\\
+            OutputTrees(\\
+                    tree=BioNJ,\\
+                    file=./maf_trees/output_tree_consensus.nh,\\
+                    compression=none,\\
                     strip_names=yes)
-                """%(','.join(all_species),','.join(all_species),min_block_length,','.join(all_species)))
+                """%(','.join(all_species),','.join(all_species),min_block_length,
+                     ("""ExtractFeature(\\
+                            ref_species=%s,\\
+                            feature.file=%s,\\
+                            feature.format=%s,\\
+                            feature.type=%s,\\
+                            feature.file.compression=none,\\
+                            complete=no,\\
+                            compression=none),\\"""%(reference_species,feature_file,'BedGraph' if feature_file.endswith('.bed')
+                                        or feature_file.endswith('.bed3') else 'GFF', feature_type) if feature_file.endswith('.bed') or
+                                        feature_file.endswith('.bed3') or feature_file.endswith('.gff') or feature_file.endswith('.gff3') else ''),
+                     ','.join(all_species),
+                     ("""\nWindowSplit(\\
+                            preferred_size=%d,\\
+                            align=adjust,\\
+                            keep_small_blocks=no),\\"""%bootstrapped_distance if bootstrapped_distance else ''),
+                     ("""\nOutputDistanceMatrices(\\
+                            distance=MLDistance,\\
+                            file=data.distmat.ph,\\
+                            compression=none,\\
+                            strip_names=yes),\\""" if bootstrapped_distance == 0 else ''))) #keep_small_blocks=yes
         subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
+        if bootstrapped_distance:
+            trees_gen = Phylo.parse('./maf_trees/output_tree_consensus.nh', 'newick')
+            trees = []
+            with open('./maf_trees/output_tree_consensus.nwk','r') as f:
+                for i in range(len(f.readlines())):
+                    try:
+                        trees.append(trees_gen.next())
+                    except:
+                        pass
+            if consensus_algorithm == 'strict':
+                tree = CS.strict_consensus(trees)
+            elif consensus_algorithm == 'majority':
+                tree = CS.majority_consensus(trees,float(major_cutoff))
+            else:
+                tree = CS.adam_consensus(trees)
+            Phylo.write(tree,'./maf_trees/output_tree_consensus_bootstrap.nh','newick')
 
 def maf_change_coordinates(segment,ref_species):
     aln_lines = segment.splitlines()
@@ -293,12 +330,12 @@ def maf_change_coordinates(segment,ref_species):
                 lineList[2] = str(int(lineList3[-1])-int(lineList[2]))#-int(lineList[3]))
             else:
                 lineList[2] = str(int(lineList3[-2]) + int(lineList[2]))
-            lineList[1] = '.'.join(lineList2[::2])
+            lineList[1] = '.'.join(lineList2)#FIXME  '.'.join(lineList2[::2])
             aln_lines[i] = '\t'.join(lineList)
             if lineList2[0] == ref_species:
                 chrom = lineList2[2]
                 position = int(lineList[2])
-    return chrom,position,'\n'.join(filter(None,aln_lines))+'\n\n',
+    return chrom,position,'\n'.join(sorted(filter(None,aln_lines)))+'\n\n'
 
 @begin.subcommand
 def selective_pressure_statistics(cns_config,reference_species, min_block_length, dist_max, window_size, root_species): # FIXME add ingroup outgroup options
@@ -315,142 +352,132 @@ def selective_pressure_statistics(cns_config,reference_species, min_block_length
     else:
         master_species = cns_config.split(',')
     master_species = set([species.split('_')[0] for species in master_species])
-    print master_species
-    mafFiles = [file for file in os.listdir('.') if file.startswith('FastaOut') and file.endswith('.maf')]
-    if 0: #FIXME tests
-        subprocess.call('rm merged.maf',shell=True)
-        for file in mafFiles:
-            subprocess.call("sed -e '/Anc/d;/#/d' %s >> merged.maf"%file,shell=True)
-        with open('merged.maf','r') as f: #FIXME
-            txt = f.read().replace('\n\n\n','\n\n')
-        with open('merged.maf','w') as f:
-            f.write(txt)
-        del txt
-        with open('maf_filter_config.bpp','w') as f:
-                    f.write("""
-            input.file=./merged.maf
-            input.format=Maf
-            output.log=out.log
-            maf.filter=\
-                Subset(\
-                        strict=yes,\
-                        keep=no,\
-                        species=(%s),\
-                        remove_duplicates=yes),\
-                MaskFilter(species=(%s)),\
-                MinBlockLength(min_length=%d),\
-                Output(\
-                        file=merged.filtered.maf,\
-                        compression=none,\
-                        mask=yes)
-                    """%(','.join(master_species),','.join(master_species),min_block_length))
-        subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
-        # FIXME sort them by coordinates then output, and keep order of species
-        maf_sort_structure = []
-        with open('merged.filtered.maf','r') as f:
-            for segment in f.read().split('\n\n'): # FIXME can turn this to generator in future, especially with large maf size
-                if segment:
-                    maf_sort_structure.append(maf_change_coordinates(segment,reference_species))
-        maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
-        with open('merged.filtered.new_coords.maf','w') as f2:
-            for seg in maf_sort_structure.itertuples():
-                f2.write(seg[3])
-        del maf_sort_structure #FIXME may be bad when maf file is hundreds of gb large
-        with open('maf_filter_config.bpp','w') as f:
-            f.write("""
-            input.file=./merged.filtered.new_coords.maf
-            input.format=Maf
-            output.log=out.log
-            maf.filter=\
-                Merge(\
-                        species=(%s),\
-                        dist_max=%d),\
-                WindowSplit(\
-                        preferred_size=%d,\
-                        align=adjust,\
-                        keep_small_blocks=yes),\
-                RemoveEmptySequences(),\
-                Output(\
-                        file=merged.filtered.new_coords.syntenic.maf,\
-                        compression=none,\
-                        mask=no)
-                    """%(reference_species,dist_max,window_size))
-        subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
+    if 0:
+        print master_species
+        mafFiles = [file for file in os.listdir('.') if file.startswith('FastaOut') and file.endswith('.maf')]
+        if 1: #FIXME tests
+            subprocess.call('rm merged.maf',shell=True)
+            for file in mafFiles:
+                subprocess.call("sed -e '/Anc/d;/#/d' %s >> merged.maf"%file,shell=True)
+            with open('merged.maf','r') as f: #FIXME
+                txt = f.read().replace('\n\n\n','\n\n')
+            with open('merged.maf','w') as f:
+                f.write(txt)
+            del txt
+            with open('maf_filter_config.bpp','w') as f:
+                        f.write("""
+                input.file=./merged.maf
+                input.format=Maf
+                output.log=out.log
+                maf.filter=\\
+                    Subset(\\
+                            strict=yes,\\
+                            keep=no,\\
+                            species=(%s),\\
+                            remove_duplicates=yes),\\
+                    MaskFilter(species=(%s)),\\
+                    MinBlockLength(min_length=%d),\\
+                    Output(\\
+                            file=merged.filtered.maf,\\
+                            compression=none,\\
+                            mask=yes)
+                        """%(','.join(master_species),','.join(master_species),min_block_length))
+            subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
+            # FIXME sort them by coordinates then output, and keep order of species
+            maf_sort_structure = []
+            with open('merged.filtered.maf','r') as f:
+                for segment in f.read().split('\n\n'): # FIXME can turn this to generator in future, especially with large maf size
+                    if segment:
+                        maf_sort_structure.append(maf_change_coordinates(segment,reference_species))
+            maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
+            with open('merged.filtered.new_coords.maf','w') as f2:
+                for seg in maf_sort_structure.itertuples():
+                    f2.write(seg[3])
+            del maf_sort_structure #FIXME may be bad when maf file is hundreds of gb large
+            with open('maf_filter_config.bpp','w') as f:
+                f.write("""
+                input.file=./merged.filtered.new_coords.maf
+                input.format=Maf
+                output.log=out.log
+                maf.filter=\\
+                    Merge(\\
+                            species=(%s),\\
+                            dist_max=%d),\\
+                    WindowSplit(\\
+                            preferred_size=%d,\\
+                            align=adjust,\\
+                            keep_small_blocks=no),\\
+                    RemoveEmptySequences(),\\
+                    Output(\\
+                            file=merged.filtered.new_coords.syntenic.maf,\\
+                            compression=none,\\
+                            mask=no)
+                        """%(reference_species,dist_max,window_size))
+            subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
+        with open('merged.filtered.new_coords.syntenic.maf','r') as f:
+            segments = f.read().split('\n\n')
+        with open('merged.filtered.new_coords.syntenic.maf','w') as f:
+            for segment in segments: # FIXME can turn this to generator in future, especially with large maf size
+                if segment.strip('a\n'):
+                    f.write(segment+'\n\n')
+        del segments
     maf_configs = []
     maf_configs.append("""
-        input.file=./merged.filtered.new_coords.syntenic.maf
-        input.format=Maf
-        output.log=out.log
-        maf.filter=\
-            OutputCoordinates(\
-                    file=coordinates.txt,\
-                    compression=none,\
-                    species=(%s),\
-                    output_src_size=yes)
-            """%reference_species)
-    maf_configs.append("""
-        input.file=./merged.filtered.new_coords.syntenic.maf
-        input.format=Maf
-        output.log=out.log
-        maf.filter=\
-            DistanceEstimation(\
-                    method=ml,\
-                    model=GTR,\
-                    gap_option=no_gap,\
-                    parameter_estimation=initial,\
-                    gaps_as_unresolved=yes,\
-                    unresolved_as_gaps=yes,\
-                    extended_names=no),\
-            DistanceBasedPhylogeny(\
-                    method=bionj,\
-                    dist_mat=MLDistance),\
-            NewOutgroup(\
-                    tree_input=BioNJ,\
-                    tree_output=BioNJ,\
-                    outgroup=%s),\
-            SequenceStatistics(\
-                statistics=(\
-                    BlockCounts,\
-                    AlnScore,\
-                    BlockLength,\
-                    CountClusters(\
-                        tree=bionj,\
-                        threshold=0.001),\
-                    SiteFrequencySpectrum(\
-                        bounds=(-0.5,0.5,1.5,2.5,3.5,4.5),\
-                        ingroup=(%s),\
-                        outgroup=%s),\
-                    SiteStatistics(\
-                        species=%s),\
-                        ),\
-                    DiversityStatistics(ingroup=(%s)),\
-                ref_species=%s,\
-                file=data.statistics.csv)"""%(root_species,','.join(master_species),root_species,reference_species,','.join(master_species),reference_species))
-    maf_configs.append("""
-        input.file=./merged.filtered.new_coords.syntenic.maf
-        input.format=Maf
-        output.log=out.log
-        maf.filter=\
-            DistanceEstimation(\
-                    method=ml,\
-                    model=GTR,\
-                    gap_option=no_gap,\
-                    parameter_estimation=initial,\
-                    gaps_as_unresolved=yes,\
-                    unresolved_as_gaps=yes,\
-                    extended_names=no),\
-        DistanceBasedPhylogeny(\
-                    method=bionj,\
-                    dist_mat=MLDistance),\
-        NewOutgroup(\
-                    tree_input=BioNJ,\
-                    tree_output=BioNJ,\
-                    outgroup=%s),\
-        OutputTrees(\
-                    tree=BioNJ,\
-                    file=./maf_trees/output_trees.nwk,\
-                    compression=none,\
-                    strip_names=yes)"""%(root_species))
+    input.file=./merged.filtered.new_coords.syntenic.maf
+    input.format=Maf
+    output.log=out.log
+    maf.filter=\\
+        XFullGap(species=(%s)),\\
+        RemoveEmptySequences(),\\
+        Subset(\\
+                strict=yes,\\
+                keep=no,\\
+                species=(%s),\\
+                remove_duplicates=yes),\\
+        MinBlockLength(min_length=%d), \\
+        OutputCoordinates(\\
+                file=coordinates.txt,\\
+                compression=none,\\
+                species=(%s),\\
+                output_src_size=yes),\\
+        DistanceEstimation(\\
+                method=ml,\\
+                model=GTR,\\
+                gap_option=no_gap,\\
+                parameter_estimation=initial,\\
+                gaps_as_unresolved=no,\\
+                unresolved_as_gaps=yes,\\
+                extended_names=yes),\\
+        DistanceBasedPhylogeny(\\
+                    method=bionj,\\
+                    dist_mat=MLDistance),\\
+        NewOutgroup(\\
+                    tree_input=BioNJ,\\
+                    tree_output=BioNJ,\\
+                    outgroup=%s),\\
+        SequenceStatistics(\\
+            statistics=(\\
+                BlockCounts,\\
+                AlnScore,\\
+                BlockLength,\\
+                CountClusters(\\
+                    tree=BioNJ,\\
+                    threshold=0.001),\\
+                SiteFrequencySpectrum(\\
+                    bounds=(-0.5,0.5,1.5,2.5,3.5,4.5),\\
+                    ingroup=(%s),\\
+                    outgroup=%s),\\
+                SiteStatistics(\\
+                    species=(%s)),\\
+                DiversityStatistics(ingroup=(%s)),\\
+                    ),\\
+            ref_species=%s,\\
+            file=data.statistics.csv),\\
+        OutputTrees(\\
+                    tree=BioNJ,\\
+                    file=./maf_trees/output_trees.nwk,\\
+                    compression=none,\\
+                    strip_names=yes)"""%(','.join(master_species),','.join(master_species),int(window_size/2),reference_species,root_species,','.join(master_species),root_species,','.join(master_species),','.join(master_species),reference_species))
     # FIXME master species on 4th entry
     for maf_config in maf_configs:
         with open('maf_filter_config.bpp','w') as f:
@@ -458,6 +485,22 @@ def selective_pressure_statistics(cns_config,reference_species, min_block_length
         subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
     # output will be trees and statistics, use pandas and grab tree lengths to pandas, encode array, then add polymorphism density from vcf possibly, and then pca the results and cluster the regions
     # neural network model???
+    df = pd.read_csv('data.statistics.csv')
+    df['tree_lengths'] = find_tree_lengths('./maf_trees/output_trees.nwk')
+
+@begin.subcommand()
+def find_tree_lengths(tree_file):
+    trees_gen = Phylo.parse(tree_file, 'newick')
+    output_tree_lengths = []
+    with open(tree_file,'r') as f:
+        for i in range(len(f.readlines())):
+            try:
+                tree = trees_gen.next()
+                output_tree_lengths.append(tree.total_branch_length())
+            except:
+                output_tree_lengths.append(0)
+    np.save('out_tree_lengths.npy',np.array(output_tree_lengths))
+    return output_tree_lengths
 
 
 @begin.subcommand
