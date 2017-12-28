@@ -9,6 +9,8 @@ import numpy as np
 import sys
 import pandas as pd
 from collections import Counter
+from bx.align import maf
+from bx import interval_index_file
 
 def parseConfigFindList(stringFind,configFile):
     """parseConfigFindList inputs a particular string to find and read file after and a configuration file object
@@ -241,11 +243,12 @@ def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_
         subprocess.call('rm merged.maf',shell=True)
         for file in mafFiles:
             subprocess.call("sed -e '/Anc/d;/#/d' %s >> merged.maf"%file,shell=True)
-        with open('merged.maf','r') as f: #FIXME
-            txt = f.read().replace('\n\n\n','\n\n')
-        with open('merged.maf','w') as f:
-            f.write(txt)
-        del txt
+        subprocess.call("cat -s merged.maf > temp.maf && mv temp.maf merged.maf",shell=True)
+        #with open('merged.maf','r') as f: #FIXME memory errors
+        #    txt = f.read().replace('\n\n\n','\n\n')
+        #with open('merged.maf','w') as f:
+        #    f.write(txt)
+        #del txt
         #subprocess.call("sed '/#/d' merged.maf > out_maf.maf",shell=True)
         with open('maf_filter_config.bpp','w') as f:
                 f.write("""
@@ -338,7 +341,7 @@ def maf_change_coordinates(segment,ref_species):
     return chrom,position,'\n'.join(sorted(filter(None,aln_lines)))+'\n\n'
 
 @begin.subcommand
-def selective_pressure_statistics(cns_config,reference_species, min_block_length, dist_max, window_size, root_species): # FIXME add ingroup outgroup options
+def selective_pressure_statistics(cns_config,reference_species, min_block_length, dist_max, window_size, root_species): # FIXME add ingroup outgroup options, maybe add ability to output unrooted tree !!!!!!  12/18/17
     min_block_length = int(min_block_length)
     window_size = int(window_size)
     dist_max = int(dist_max)
@@ -352,75 +355,75 @@ def selective_pressure_statistics(cns_config,reference_species, min_block_length
     else:
         master_species = cns_config.split(',')
     master_species = set([species.split('_')[0] for species in master_species])
-    if 0:
-        print master_species
-        mafFiles = [file for file in os.listdir('.') if file.startswith('FastaOut') and file.endswith('.maf')]
-        if 1: #FIXME tests
-            subprocess.call('rm merged.maf',shell=True)
-            for file in mafFiles:
-                subprocess.call("sed -e '/Anc/d;/#/d' %s >> merged.maf"%file,shell=True)
-            with open('merged.maf','r') as f: #FIXME
-                txt = f.read().replace('\n\n\n','\n\n')
-            with open('merged.maf','w') as f:
-                f.write(txt)
-            del txt
-            with open('maf_filter_config.bpp','w') as f:
-                        f.write("""
-                input.file=./merged.maf
-                input.format=Maf
-                output.log=out.log
-                maf.filter=\\
-                    Subset(\\
-                            strict=yes,\\
-                            keep=no,\\
-                            species=(%s),\\
-                            remove_duplicates=yes),\\
-                    MaskFilter(species=(%s)),\\
-                    MinBlockLength(min_length=%d),\\
-                    Output(\\
-                            file=merged.filtered.maf,\\
-                            compression=none,\\
-                            mask=yes)
-                        """%(','.join(master_species),','.join(master_species),min_block_length))
-            subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
-            # FIXME sort them by coordinates then output, and keep order of species
-            maf_sort_structure = []
-            with open('merged.filtered.maf','r') as f:
-                for segment in f.read().split('\n\n'): # FIXME can turn this to generator in future, especially with large maf size
-                    if segment:
-                        maf_sort_structure.append(maf_change_coordinates(segment,reference_species))
-            maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
-            with open('merged.filtered.new_coords.maf','w') as f2:
-                for seg in maf_sort_structure.itertuples():
-                    f2.write(seg[3])
-            del maf_sort_structure #FIXME may be bad when maf file is hundreds of gb large
-            with open('maf_filter_config.bpp','w') as f:
+    print master_species
+    mafFiles = [file for file in os.listdir('.') if file.startswith('FastaOut') and file.endswith('.maf')]
+    #FIXME tests
+    subprocess.call('rm merged.maf',shell=True)
+    for file in mafFiles:
+        subprocess.call("sed -e '/Anc/d;/#/d' %s >> merged.maf"%file,shell=True)
+    subprocess.call("cat -s merged.maf > temp.maf && mv temp.maf merged.maf",shell=True)#sed 's/\\n\\n\\n/\\n\\n/g'
+    #with open('merged.maf','r') as f: #FIXME memory error
+    #    txt = f.read().replace('\n\n\n','\n\n')
+    #with open('merged.maf','w') as f:
+    #    f.write(txt)
+    #del txt
+    with open('maf_filter_config.bpp','w') as f:
                 f.write("""
-                input.file=./merged.filtered.new_coords.maf
-                input.format=Maf
-                output.log=out.log
-                maf.filter=\\
-                    Merge(\\
-                            species=(%s),\\
-                            dist_max=%d),\\
-                    WindowSplit(\\
-                            preferred_size=%d,\\
-                            align=adjust,\\
-                            keep_small_blocks=no),\\
-                    RemoveEmptySequences(),\\
-                    Output(\\
-                            file=merged.filtered.new_coords.syntenic.maf,\\
-                            compression=none,\\
-                            mask=no)
-                        """%(reference_species,dist_max,window_size))
-            subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
-        with open('merged.filtered.new_coords.syntenic.maf','r') as f:
-            segments = f.read().split('\n\n')
-        with open('merged.filtered.new_coords.syntenic.maf','w') as f:
-            for segment in segments: # FIXME can turn this to generator in future, especially with large maf size
-                if segment.strip('a\n'):
-                    f.write(segment+'\n\n')
-        del segments
+        input.file=./merged.maf
+        input.format=Maf
+        output.log=out.log
+        maf.filter=\\
+            Subset(\\
+                    strict=yes,\\
+                    keep=no,\\
+                    species=(%s),\\
+                    remove_duplicates=yes),\\
+            MaskFilter(species=(%s)),\\
+            MinBlockLength(min_length=%d),\\
+            Output(\\
+                    file=merged.filtered.maf,\\
+                    compression=none,\\
+                    mask=yes)
+                """%(','.join(master_species),','.join(master_species),min_block_length))
+    subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
+    # FIXME sort them by coordinates then output, and keep order of species
+    maf_sort_structure = []
+    with open('merged.filtered.maf','r') as f: # FIXME consider indexing this file if too large and sorting that way
+        for segment in f.read().split('\n\n'): # FIXME can turn this to generator in future, especially with large maf size
+            if segment:
+                maf_sort_structure.append(maf_change_coordinates(segment,reference_species))
+    maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
+    with open('merged.filtered.new_coords.maf','w') as f2:
+        for seg in maf_sort_structure.itertuples():
+            f2.write(seg[3])
+    del maf_sort_structure #FIXME may be bad when maf file is hundreds of gb large
+    with open('maf_filter_config.bpp','w') as f:
+        f.write("""
+        input.file=./merged.filtered.new_coords.maf
+        input.format=Maf
+        output.log=out.log
+        maf.filter=\\
+            Merge(\\
+                    species=(%s),\\
+                    dist_max=%d),\\
+            WindowSplit(\\
+                    preferred_size=%d,\\
+                    align=adjust,\\
+                    keep_small_blocks=no),\\
+            RemoveEmptySequences(),\\
+            Output(\\
+                    file=merged.filtered.new_coords.syntenic.maf,\\
+                    compression=none,\\
+                    mask=no)
+                """%(reference_species,dist_max,window_size))
+    subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
+    with open('merged.filtered.new_coords.syntenic.maf','r') as f:
+        segments = f.read().split('\n\n')
+    with open('merged.filtered.new_coords.syntenic.maf','w') as f:
+        for segment in segments: # FIXME can turn this to generator in future, especially with large maf size
+            if segment.strip('a\n'):
+                f.write(segment+'\n\n')
+    del segments
     maf_configs = []
     maf_configs.append("""
     input.file=./merged.filtered.new_coords.syntenic.maf
@@ -564,6 +567,36 @@ def find_Tree():
 def intersect_vcf(vcf_in, bed_regions, vcf_out):
     subprocess.call('bedtools intersect -wa -a %s -b %s > %s'%(vcf_in, bed_regions, vcf_out),shell=True)
 
+@begin.subcommand
+def index_maf(maf_file, ref_species):
+    index_file = maf_file + '.idx'
+    indexes = interval_index_file.Indexes()
+    with open(maf_file,'r') as f:
+        reader = maf.Reader(f)
+        while True:
+            pos = reader.file.tell()
+            rec = reader.next()
+            if rec is None:
+                break
+            for c in rec.components:
+                indexes.add(c.src,c.forward_strand_start,c.forward_strand_end, pos)
+    with open(index_file,'w') as f:
+        indexes.write(f)
+
+        """
+        if c.src.startswith(ref_species):
+
+    rec_info = []
+    with open(maf_file) as f:
+        reader = maf.Reader(f)
+        while True:
+            pos = reader.file.tell()
+            rec = reader.next()
+            if rec is None:
+                break
+            rec_info.append((rec,pos))
+    rec_info.sort()
+    """
 
 
 """

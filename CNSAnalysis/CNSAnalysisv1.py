@@ -213,8 +213,8 @@ def findBadCharPosition(strSeq):
     """for each MAF sequence, output maximum number of valid characters in a row, exclude duplicates/lowercase/N/softmask <- invalid
     only accept sequence in analysis if at least 15 valid characters in a row"""
     #minVal = np.min(np.vectorize(lambda y: turnSixteen(y))(np.vectorize(lambda x: strSeq.find(x))(np.array(['a','t','c','g','N']))))
-    if 'a' in strSeq or 'c' in strSeq or 'N' in strSeq or 'g' in strSeq or 't' in strSeq:
-        return np.max(np.vectorize(lambda x: len(x))(np.array(strSeq.replace('a','N').replace('c','N').replace('t','N').replace('g','N').strip('-').split('N'))))
+    if 'a' in strSeq or 'c' in strSeq or 'n' in strSeq or 'N' in strSeq or 'g' in strSeq or 't' in strSeq:
+        return np.max(np.vectorize(lambda x: len(x))(np.array(strSeq.replace('a','N').replace('c','N').replace('t','N').replace('g','N').replace('n','N').strip('-').split('N'))))
     else:
         return 16
 
