@@ -1,3 +1,6 @@
+#######################################################################
+############################# IMPORTS #################################
+
 import begin, ete3
 from ete3 import PhyloTree,Tree,TreeStyle,NodeStyle,EvolTree
 import subprocess, os
@@ -11,6 +14,11 @@ import pandas as pd
 from collections import Counter
 from bx.align import maf
 from bx import interval_index_file
+from itertools import combinations
+
+
+############################################################################################
+############################# PARSE CNS CONFIG AND CNS RUN #################################
 
 def parseConfigFindList(stringFind,configFile):
     """parseConfigFindList inputs a particular string to find and read file after and a configuration file object
@@ -33,6 +41,33 @@ def parseConfigFindList(stringFind,configFile):
 def runCNSAnalysis():
     subprocess.call('python runCNSAnalysis.py')
 
+#################################################################################################
+############################## CONVERT TREE TO DISTANCE MATRIX ##################################
+
+@begin.subcommand
+def tree2matrix(tree_file):
+    tree = Phylo.read(tree_file,'newick')
+    allclades = list(tree.find_clades(order='level'))
+    species_names = [clade.name for clade in allclades if clade.name]
+    df = pd.DataFrame(np.nan, index=species_names, columns=species_names)
+    for i,j in combinations(species_names,r=2):
+        if i == j:
+            df.set_value(i,j,0)
+        if i != j:
+            distance = tree.distance(i,j)
+            df.set_value(i,j,distance)
+            df.set_value(j,i,distance)
+    df.to_csv('distance_matrix.csv')
+
+@begin.subcommand
+def replace_species_names(csv_file, reverse_lookup_dict):
+    with open(csv_file,'r') as f:
+        txt = f.read()
+
+
+#############################################################################################
+############################## ETE3 AND BIOPYTHON ANALYSES ##################################
+
 @begin.subcommand
 def output_Tree(aln_output_txt,aln_file, out_fname):
     if aln_file.endswith('.phylip'):
@@ -53,6 +88,80 @@ def output_Tree(aln_output_txt,aln_file, out_fname):
         n.set_style(ns)
     #t.show(tree_style=ts)
     t.render(out_fname,tree_style = ts)
+
+@begin.subcommand()
+def find_tree_lengths(tree_file):
+    trees_gen = Phylo.parse(tree_file, 'newick')
+    output_tree_lengths = []
+    with open(tree_file,'r') as f:
+        for i in range(len(f.readlines())):
+            try:
+                tree = trees_gen.next()
+                output_tree_lengths.append(tree.total_branch_length())
+            except:
+                output_tree_lengths.append(0)
+    np.save('out_tree_lengths.npy',np.array(output_tree_lengths))
+    return output_tree_lengths
+
+@begin.subcommand
+def evaluate_selective_pressure(maf_structure_pickle, neutral_tree_nwk):
+    # FIXME codeml only works in protein coding regions https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1470900/ need to add for CNS!!! https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3725466/
+    # FIXME branch specific rate changes??
+    # FIXME also degree of conservation when looking at selective pressure density
+    # FIXME add new metric? Conserved pressure metric, conserved ratio (# conserved/total conserved weighted) * selective pressure density?? for different elements??
+    codeMLPath = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/bin/ete3_apps/bin'
+    try:
+        os.mkdir('./selectivePressureTests')
+    except:
+        pass
+    maf = pickle.load(open('MAFWork.p','rb'))
+    onesCondition = maf[3].keys()[np.argmax([sum(val.values()) if type(val) != type([]) else 0 for val in maf[3].values()])]
+    for maseg in maf[1][onesCondition]['CS']:
+        model_tree = EvolTree(open(neutral_tree_nwk,'rb').read(),binpath=codeMLPath) #FIXME is this the right tree to be using???
+        aln_lines = maf[1][onesCondition]['CS'][maseg].splitlines()
+        coord_info = {}
+        for i in range(len(aln_lines))[::2]:
+            coord_info[aln_lines[i].find('>')+1:aln_lines[i].find('.')] = aln_lines[i][aln_lines[i].find('.'):] #FIXME output these coordinates to bed file
+            aln_lines[i] = aln_lines[i][:aln_lines[i].find('.')]
+            alignment = '\n'.join(aln_lines)
+        model_tree.link_to_alignment(alignment)
+        model_tree.workdir = './selectivePressureTests'
+        model_tree.run_model('M1')
+        model_tree.run_model('M2')
+        pval = model_tree.get_most_likely('M2','M1')
+        if pval < 0.05:
+            for s in range(len(model2.sites['BEB']['aa'])):
+                print 'positively selected site %s at position: %s, with probability: %s' % (model2.sites['BEB']['aa'][s], s+1, model2.sites['BEB']['p2'][s])
+        # FIXME first fix codeml, then print out selective pressure density after removing --, append that to masegment, bed file with coordinates, maSeg, and selective pressure density, or could just output one-base coordinate and calculate density through bedtools
+        else:
+            print 'fail to reject null hypothesis'
+        """
+        best_model = None
+        best_lnl = float('-inf')
+        for starting_omega in [0.2, 0.7, 1.2]: # FIXME optimize and choose parameters
+            model_tree.run_model('b_free.'+str(starting_omega))
+            current_model = model_treetree.get_evol_model('b_free.'+str(starting_omega))
+            if current_model.lnL > best_lnl:
+                best_lnl = current_model.lnL
+                best_model = current_model
+        """
+        #print best_model
+        tree.render(maseg+'.png')
+        break # FIXME remove after testing
+        "FIXME UNDER DEVELOPMENT"
+
+@begin.subcommand
+def reroot_Tree(tree_in,root_species,tree_out):
+    t = PhyloTree(open(tree_in,'r').read())
+    t.set_outgroup(root_species)
+    t.write(tree_out)
+
+#########################################################################
+############################ VCF FILTER WORK ############################
+
+@begin.subcommand
+def intersect_vcf(vcf_in, bed_regions, vcf_out):
+    subprocess.call('bedtools intersect -wa -a %s -b %s > %s'%(vcf_in, bed_regions, vcf_out),shell=True)
 
 def change_of_coordinates(in_file,out_file): # FIXME USE PYTABIX FIXES NEEDED, maffilter change coordinates??
     with open(in_file,'r') as f, open(out_file,'w') as f2:
@@ -81,15 +190,16 @@ def check_vcf_empty(vcf_in):
         else:
             return True
 
-def filter_and_format():
-    return 'in dev'
-
 def sort_vcf(vcf_in,vcf_out):
     subprocess.call("""bgzip -c {0} > vcfs/out.vcf.gz
                 (zcat vcfs/out.vcf.gz | head -300 | grep ^#;
                 zcat vcfs/out.vcf.gz | grep -v ^# | sort -k1,1d -k2,2n;) \
                 | bgzip -c > {1}.gz
                 bcftools index {1}.gz""".format(vcf_in,vcf_out), shell=True)
+
+#########################################################################
+############################ MAF FILTER WORK ############################
+
 
 @begin.subcommand
 def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, overlaps):
@@ -157,6 +267,22 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
     subprocess.call('rm vcfs/final_all_sorted.vcf && gzip -d vcfs/final_all_sorted.vcf.gz',shell=True)
     #subprocess.call('bcftools sort -o vcfs/final_all_sorted.vcf vcfs/final_all.vcf',shell=True)
     #FIXME add sort function
+
+@begin.subcommand
+def index_maf(maf_file, ref_species):
+    index_file = maf_file + '.idx'
+    indexes = interval_index_file.Indexes()
+    with open(maf_file,'r') as f:
+        reader = maf.Reader(f)
+        while True:
+            pos = reader.file.tell()
+            rec = reader.next()
+            if rec is None:
+                break
+            for c in rec.components:
+                indexes.add(c.src,c.forward_strand_start,c.forward_strand_end, pos)
+    with open(index_file,'w') as f:
+        indexes.write(f)
 
 @begin.subcommand
 def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_length, concat_size, consensus_tree, bootstrapped_distance, feature_file, reference_species, feature_type):
@@ -491,99 +617,17 @@ def selective_pressure_statistics(cns_config,reference_species, min_block_length
     df = pd.read_csv('data.statistics.csv')
     df['tree_lengths'] = find_tree_lengths('./maf_trees/output_trees.nwk')
 
-@begin.subcommand()
-def find_tree_lengths(tree_file):
-    trees_gen = Phylo.parse(tree_file, 'newick')
-    output_tree_lengths = []
-    with open(tree_file,'r') as f:
-        for i in range(len(f.readlines())):
-            try:
-                tree = trees_gen.next()
-                output_tree_lengths.append(tree.total_branch_length())
-            except:
-                output_tree_lengths.append(0)
-    np.save('out_tree_lengths.npy',np.array(output_tree_lengths))
-    return output_tree_lengths
+#############################################
+################### START ###################
 
+@begin.start
+def main():
+    pass
 
-@begin.subcommand
-def evaluate_selective_pressure(maf_structure_pickle, neutral_tree_nwk):
-    # FIXME codeml only works in protein coding regions https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1470900/ need to add for CNS!!! https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3725466/
-    # FIXME branch specific rate changes??
-    # FIXME also degree of conservation when looking at selective pressure density
-    # FIXME add new metric? Conserved pressure metric, conserved ratio (# conserved/total conserved weighted) * selective pressure density?? for different elements??
-    codeMLPath = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/bin/ete3_apps/bin'
-    try:
-        os.mkdir('./selectivePressureTests')
-    except:
-        pass
-    maf = pickle.load(open('MAFWork.p','rb'))
-    onesCondition = maf[3].keys()[np.argmax([sum(val.values()) if type(val) != type([]) else 0 for val in maf[3].values()])]
-    for maseg in maf[1][onesCondition]['CS']:
-        model_tree = EvolTree(open(neutral_tree_nwk,'rb').read(),binpath=codeMLPath) #FIXME is this the right tree to be using???
-        aln_lines = maf[1][onesCondition]['CS'][maseg].splitlines()
-        coord_info = {}
-        for i in range(len(aln_lines))[::2]:
-            coord_info[aln_lines[i].find('>')+1:aln_lines[i].find('.')] = aln_lines[i][aln_lines[i].find('.'):] #FIXME output these coordinates to bed file
-            aln_lines[i] = aln_lines[i][:aln_lines[i].find('.')]
-            alignment = '\n'.join(aln_lines)
-        model_tree.link_to_alignment(alignment)
-        model_tree.workdir = './selectivePressureTests'
-        model_tree.run_model('M1')
-        model_tree.run_model('M2')
-        pval = model_tree.get_most_likely('M2','M1')
-        if pval < 0.05:
-            for s in range(len(model2.sites['BEB']['aa'])):
-                print 'positively selected site %s at position: %s, with probability: %s' % (model2.sites['BEB']['aa'][s], s+1, model2.sites['BEB']['p2'][s])
-        # FIXME first fix codeml, then print out selective pressure density after removing --, append that to masegment, bed file with coordinates, maSeg, and selective pressure density, or could just output one-base coordinate and calculate density through bedtools
-        else:
-            print 'fail to reject null hypothesis'
-        """
-        best_model = None
-        best_lnl = float('-inf')
-        for starting_omega in [0.2, 0.7, 1.2]: # FIXME optimize and choose parameters
-            model_tree.run_model('b_free.'+str(starting_omega))
-            current_model = model_treetree.get_evol_model('b_free.'+str(starting_omega))
-            if current_model.lnL > best_lnl:
-                best_lnl = current_model.lnL
-                best_model = current_model
-        """
-        #print best_model
-        tree.render(maseg+'.png')
-        break # FIXME remove after testing
-        "FIXME UNDER DEVELOPMENT"
+####################################################
+################### DEPRECATED #####################
 
-@begin.subcommand
-def reroot_Tree(tree_in,root_species,tree_out):
-    t = PhyloTree(open(tree_in,'r').read())
-    t.set_outgroup(root_species)
-    t.write(tree_out)
-
-@begin.subcommand
-def find_Tree():
-    return 'in dev'
-
-@begin.subcommand
-def intersect_vcf(vcf_in, bed_regions, vcf_out):
-    subprocess.call('bedtools intersect -wa -a %s -b %s > %s'%(vcf_in, bed_regions, vcf_out),shell=True)
-
-@begin.subcommand
-def index_maf(maf_file, ref_species):
-    index_file = maf_file + '.idx'
-    indexes = interval_index_file.Indexes()
-    with open(maf_file,'r') as f:
-        reader = maf.Reader(f)
-        while True:
-            pos = reader.file.tell()
-            rec = reader.next()
-            if rec is None:
-                break
-            for c in rec.components:
-                indexes.add(c.src,c.forward_strand_start,c.forward_strand_end, pos)
-    with open(index_file,'w') as f:
-        indexes.write(f)
-
-        """
+"""
         if c.src.startswith(ref_species):
 
     rec_info = []
@@ -636,7 +680,3 @@ maf.filter=\
                 compression=gzip,\
 nohup ./maffilter param=filterTest.bpp &
 """
-
-@begin.start
-def main():
-    pass
