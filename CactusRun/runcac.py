@@ -17,12 +17,14 @@ if not os.path.exists(haldir):
    os.makedirs(haldir)
 
 batch_header = """
+#!/bin/bash
 #$ -l ram.c=5G
-#$ -pe pe_slots %s 
+#$ -pe pe_slots %s
 #$ -l h_rt=%s
 export _JAVA_OPTIONS="-Xmx155g"
 cd /global/homes/p/phillips/software/progressiveCactus/
 """ % (options.max_threads, options.time_string)
+#batch_header="""#!/bin/bash\nexport _JAVA_OPTIONS="-Xmx155g"\ncd /global/homes/p/phillips/software/progressiveCactus/\nsource environment\n"""
 
 def existCheck(infile):
    return (os.path.exists(infile) and (os.path.getsize(infile) > 32))
@@ -50,6 +52,9 @@ for sf in seqfiles:
       print >> batch_fh, "cp %s %s" % (hal_file, os.path.abspath(haldir))
       batch_fh.close()
       qsub_cmd = "qsub -P plant-analysis.p -N cac_%s -e %s -o %s %s -m abes -M jlevy@lbl.gov" % (fname, err_file, out_file, batch_file) 
+      #with open('submission_script.sh','w') as f:
+      #   f.write('#!/bin/bash -l\nsrun %s'%batch_file)
+      #qsub_cmd = "sbatch -D . -J cac_%s submission_script.sh"%(fname)
       os.system(qsub_cmd)
 
 

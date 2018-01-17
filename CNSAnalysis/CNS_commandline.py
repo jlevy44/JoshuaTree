@@ -41,11 +41,12 @@ def parseConfigFindList(stringFind,configFile):
 def runCNSAnalysis():
     subprocess.call('python runCNSAnalysis.py')
 
+
 #################################################################################################
 ############################## CONVERT TREE TO DISTANCE MATRIX ##################################
 
 @begin.subcommand
-def tree2matrix(tree_file):
+def tree2matrix(tree_file,distance_matrix = 'distance_matrix.csv'):
     tree = Phylo.read(tree_file,'newick')
     allclades = list(tree.find_clades(order='level'))
     species_names = [clade.name for clade in allclades if clade.name]
@@ -57,12 +58,13 @@ def tree2matrix(tree_file):
             distance = tree.distance(i,j)
             df.set_value(i,j,distance)
             df.set_value(j,i,distance)
-    df.to_csv('distance_matrix.csv')
+    df.to_csv(distance_matrix)
 
 @begin.subcommand
 def replace_species_names(csv_file, reverse_lookup_dict):
     with open(csv_file,'r') as f:
         txt = f.read()
+        'FINISH!!'
 
 
 #############################################################################################
@@ -156,12 +158,101 @@ def reroot_Tree(tree_in,root_species,tree_out):
     t.set_outgroup(root_species)
     t.write(tree_out)
 
+@begin.subcommand
+def run_phyml(phylip_in,bootstrap):
+    if phylip_in.endswith('.fasta') or phylip_in.endswith('.fa'):
+        subprocess.call(['perl', 'Fasta2Phylip.pl', phylip_in, phylip_in.replace('fasta','phylip')])
+        phylip_in = phylip_in.replace('fasta','phylip')
+    phymlLine = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/bin/ete3_apps/bin/phyml'
+    subprocess.call([phymlLine, '-i', phylip_in, '-s', 'BEST', '-q', '-b', bootstrap, '-m', 'GTR'])
+
+@begin.subcommand
+def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species):
+    #run_phyml(aln_syn,'1')
+    subprocess.call('ete3 build -n %s -o syn_tree/ --clearall -w none-none-none-%s_default'%(aln_syn,phyml_fasttree),shell=True)
+    subprocess.call('ete3 build -n %s -o non_syn_tree/ --clearall -w none-none-none-%s_default'%(aln_non_syn,phyml_fasttree),shell=True)
+    neutral_tree = EvolTree('syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_syn))
+    with open(aln_syn,'r') as f:
+        neutral_tree.link_to_alignment(f.read())
+    non_syn_tree = EvolTree('non_syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_non_syn))
+    with open(aln_non_syn,'r') as f:
+        non_syn_tree.link_to_alignment(f.read())
+    neutral_tree.run_model('fb')
+    non_syn_tree.run_model('fb')
+    print neutral_tree.get_evol_model('fb')
+    print non_syn_tree.get_evol_model('fb')
+
+    # get distances between reference and list of species
+    tree2matrix('syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_non_syn),'synonymous_dist_matrix.csv')
+    tree2matrix('non_syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_non_syn),'non-synonymous_dist_matrix.csv')
+    list_species = list_species.split(',')
+    syn_dist = pd.read_csv('synonymous_dist_matrix.csv')
+    non_syn_dist = pd.read_csv('non-synonymous_dist_matrix.csv')
+    df = pd.DataFrame(index=[aln_type+reference for aln_type in ['syn:','non-syn:']],columns=list_species)
+    for species in list_species:
+        df['syn:'+reference,species] = syn_dist[reference,species]
+        df['non-syn:'+reference,species] = non_syn_dist[reference,species]
+    df.to_csv('syn_non-syn_comparison_%s.csv'%reference)
+
+    # FIXME Find way to compare two models
+
+
+
+
+
+
 #########################################################################
 ############################ VCF FILTER WORK ############################
 
 @begin.subcommand
 def intersect_vcf(vcf_in, bed_regions, vcf_out):
     subprocess.call('bedtools intersect -wa -a %s -b %s > %s'%(vcf_in, bed_regions, vcf_out),shell=True)
+
+@begin.subcommand
+def annotate_snps(vcf_in,genome_name,fasta_in,gff_in,vcf_out):
+    """Goal is to find synonymous and non-synonymous regions of SNPs"""
+    # format gff in
+    #subprocess.call('grep -v "#" %s | sort -k1,1 -k2,2n -k3,3n -t$\'\t\' | bgzip -c > %s.gz && tabix -p gff %s.gz'%(gff_in,gff_in,gff_in),shell=True)
+    snp_eff_line = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/share/snpeff-4.3.1r-0/snpEff.config'
+    subprocess.call('scp %s . && mkdir -p ./data/%s'%(snp_eff_line,genome_name),shell=True)
+    with open('snpEff.config','r') as f:
+        write = 0
+        writeLines = []
+        for line in f:
+            if 'Databases & Genomes' in line:
+                write = 1
+            writeLines.append(line)
+            if write and '#-----------------------------' in line:
+                writeLines.append('\n# my %s genome\n%s.genome : %s\n'%(genome_name,genome_name,genome_name))
+                write = 0
+    with open('snpEff.config','w') as f:
+        f.writelines(writeLines)
+    subprocess.call('scp %s ./data/%s/sequences.fa && scp %s ./data/%s/genes.gff'%(fasta_in,genome_name,gff_in,genome_name),shell=True)
+    subprocess.call('snpEff build -c snpEff.config -gff3 -v %s > snpEff.stdout 2> snpEff.stderr'%genome_name,shell=True)
+    subprocess.call('snpEff -c snpEff.config %s %s > %s'%(genome_name,vcf_in,vcf_out),shell=True)
+
+@begin.subcommand
+def generate_N_S_aln(reference_species,vcf_in):
+    with open(vcf_in,'r') as f:
+        for line in f:
+            if line.startswith('#CHROM'):
+                species_list = line.split()[9:]
+                break
+        aln_dict = {site_type: {species : '' for species in species_list} for site_type in ['synonymous','non-synonymous']}
+    #print aln_dict
+    for site_type, f in zip(['synonymous','non-synonymous'],[os.popen('grep synonymous %s'%vcf_in),os.popen('grep protein_coding %s | grep -v synonymous'%vcf_in)]):
+        lines = f.read().splitlines()
+        for line in lines:
+            ll = line.split()
+            #print ll
+            #aln_dict[site_type][reference_species] += ll[3]
+            snp_dict = dict({'0':ll[3],'.':'-'},**{str(snp+1): snp_chr for snp,snp_chr in enumerate(ll[4].split(','))})
+            #print snp_dict
+            for idx, snp in enumerate(ll[9:]):
+                aln_dict[site_type][species_list[idx]] += snp_dict[snp]
+        with open(site_type+'_regions_aln_%s.fasta'%reference_species,'w') as f:
+            f.write('\n'.join(['>%s\n%s'%(species,aln_dict[site_type][species]) for species in aln_dict[site_type]]))
+
 
 def change_of_coordinates(in_file,out_file): # FIXME USE PYTABIX FIXES NEEDED, maffilter change coordinates??
     with open(in_file,'r') as f, open(out_file,'w') as f2:
@@ -264,7 +355,8 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
     subprocess.call('bcftools concat%s -O v -o vcfs/final_all.vcf %s'%(' --allow-overlaps' if overlaps else '',' '.join(finalOutVCFFiles)),shell=True)
     #subprocess.call("sed 's/##source=Bio++/##INFO=<ID=AC>/g' vcfs/final_all.vcf > vcfs/final_all_edit.vcf && mv vcfs/final_all_edit.vcf vcfs/final_all.vcf && rm vcfs/final_all_edit.vcf",shell=True)
     sort_vcf('vcfs/final_all.vcf','vcfs/final_all_sorted.vcf')
-    subprocess.call('rm vcfs/final_all_sorted.vcf && gzip -d vcfs/final_all_sorted.vcf.gz',shell=True)
+    subprocess.call('rm vcfs/final_all_sorted.vcf && zcat vcfs/final_all_sorted.vcf.gz > vcfs/final_all_sorted.vcf',shell=True)
+
     #subprocess.call('bcftools sort -o vcfs/final_all_sorted.vcf vcfs/final_all.vcf',shell=True)
     #FIXME add sort function
 
@@ -283,6 +375,18 @@ def index_maf(maf_file, ref_species):
                 indexes.add(c.src,c.forward_strand_start,c.forward_strand_end, pos)
     with open(index_file,'w') as f:
         indexes.write(f)
+
+@begin.subcommand
+def index_maf_2(maf_file):
+    idxs = []
+    with open(maf_file,'r') as f:
+        offset = 0
+        for line in f:
+            if line.startswith('a'):
+                idxs.append(offset)
+            offset = f.tell()
+        idxs.append(f.tell())
+    return {idxs[i]:idxs[i+1] for i in range(len(idxs)-1)}
 
 @begin.subcommand
 def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_length, concat_size, consensus_tree, bootstrapped_distance, feature_file, reference_species, feature_type):
@@ -513,19 +617,27 @@ def selective_pressure_statistics(cns_config,reference_species, min_block_length
                 """%(','.join(master_species),','.join(master_species),min_block_length))
     subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
     # FIXME sort them by coordinates then output, and keep order of species
+    maf_idx = index_maf_2('merged.filtered.maf')
+    count = 0
     maf_sort_structure = []
-    with open('merged.filtered.maf','r') as f: # FIXME consider indexing this file if too large and sorting that way
-        for segment in f.read().split('\n\n'): # FIXME can turn this to generator in future, especially with large maf size
-            if segment:
-                maf_sort_structure.append(maf_change_coordinates(segment,reference_species))
+    with open('merged.filtered.maf','r') as f, open('merged.filtered.new_coords.maf','w') as f2:
+        for idx in maf_idx:
+            f.seek(idx)
+            chrom, position, segment = maf_change_coordinates(f.read(maf_idx[idx] - idx),reference_species)
+            maf_sort_structure.append((chrom, position, count))
+            count += 1
+            f2.write(segment)
+
     maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
-    with open('merged.filtered.new_coords.maf','w') as f2:
-        for seg in maf_sort_structure.itertuples():
-            f2.write(seg[3])
-    del maf_sort_structure #FIXME may be bad when maf file is hundreds of gb large
+    maf_idx = index_maf_2('merged.filtered.new_coords.maf')
+    maf_idx_sorted = np.array(maf_idx.keys())[maf_sort_structure.as_matrix([2])]
+    with open('merged.filtered.new_coords.maf','r') as f, open('merged.filtered.new_coords.sorted.maf','w') as f2:
+        for idx in maf_idx_sorted:
+            f.seek(idx)
+            f2.write(f.read(maf_idx[idx] - idx))
     with open('maf_filter_config.bpp','w') as f:
         f.write("""
-        input.file=./merged.filtered.new_coords.maf
+        input.file=./merged.filtered.new_coords.sorted.maf
         input.format=Maf
         output.log=out.log
         maf.filter=\\
@@ -543,16 +655,16 @@ def selective_pressure_statistics(cns_config,reference_species, min_block_length
                     mask=no)
                 """%(reference_species,dist_max,window_size))
     subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
-    with open('merged.filtered.new_coords.syntenic.maf','r') as f:
-        segments = f.read().split('\n\n')
-    with open('merged.filtered.new_coords.syntenic.maf','w') as f:
-        for segment in segments: # FIXME can turn this to generator in future, especially with large maf size
+    maf_idx = index_maf_2('merged.filtered.new_coords.syntenic.maf')
+    with open('merged.filtered.new_coords.syntenic.maf','r') as f, open('merged.filtered.new_coords.syntenic.fixed.maf','w') as f2:
+        for idx in maf_idx:
+            f.seek(idx)
+            segment = f.read(maf_idx[idx] - idx)
             if segment.strip('a\n'):
-                f.write(segment+'\n\n')
-    del segments
+                f2.write(segment+'\n\n')
     maf_configs = []
     maf_configs.append("""
-    input.file=./merged.filtered.new_coords.syntenic.maf
+    input.file=./merged.filtered.new_coords.syntenic.fixed.maf
     input.format=Maf
     output.log=out.log
     maf.filter=\\
@@ -679,4 +791,22 @@ maf.filter=\
                 CAN ADD TO ABOVE with .gz extension included
                 compression=gzip,\
 nohup ./maffilter param=filterTest.bpp &
+"""
+"""
+maf_sort_structure = []
+with open('merged.filtered.maf','r') as f: # FIXME consider indexing this file if too large and sorting that way
+    for segment in f.read().split('\n\n'): # FIXME can turn this to generator in future, especially with large maf size
+        if segment:
+            maf_sort_structure.append(maf_change_coordinates(segment,reference_species))
+maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
+with open('merged.filtered.new_coords.maf','w') as f2:
+    for seg in maf_sort_structure.itertuples():
+        f2.write(seg[3])
+del maf_sort_structure #FIXME may be bad when maf file is hundreds of gb large
+
+segments = f.read().split('\n\n')
+    with open('merged.filtered.new_coords.syntenic.maf','w') as f:
+        for segment in segments: # FIXME can turn this to generator in future, especially with large maf size
+            if segment.strip('a\n'):
+                f.write(segment+'\n\n')
 """
