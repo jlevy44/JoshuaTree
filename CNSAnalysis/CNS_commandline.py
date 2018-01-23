@@ -52,7 +52,7 @@ def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_gen
     #non_DE_genes = np.setdiff1d(all_genes,DE_genes)
     if shortname2name.endswith('.txt'):
         with open(shortname2name,'r') as f:
-            shortname2name = dict([tuple(line.split()) for line in f.read().striplines() if line])
+            shortname2name = dict([tuple(line.split()) for line in f.read().splitlines() if line])
     else:
         shortname2name = {shortname:name for shortname,name in [shortname_dict.split(':') for shortname_dict in shortname2name.split(',')]}
     dist_mat = tree2matrix(tree_file).rename(index=shortname2name,columns=shortname2name)
@@ -61,30 +61,44 @@ def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_gen
         for line in f:
             if line:
                 ll = line.split('closestGene=')
-                MASegs = ll[0].split()[1].split('|')
+                MASegs = ll[0].split()[-1].split('|')
                 ll2 = ll[1].split(';')
                 genes = ll2[0].split('|')
                 distance = ll2[1].replace('distance=','')
                 for MASeg in MASegs:
+                    #print MASeg
                     species_cons = dict([species.split(':') for species in MASeg.split(';')[1].split(',')])
                     present_species = [species for species in species_cons if int(species_cons[species])]
                     conservation_score = np.sum(np.vectorize(lambda x: dist_mat[x][main_species] if x != main_species else 0)(present_species))
                     for gene in genes:
                         final_array.append([gene in DE_genes,distance,conservation_score])
     df = pd.DataFrame(final_array,columns=['DE_GENE','Distance','Conservation_Score'])
+    print df
     df.to_csv('CNSvsDE_raw.csv')
-    distanceGroups = {'Present Within':0,'Present Within 0-100':0,'Present Within 100-1000':0,'Present Outside 1000':0}
-    distances = [(0),(0,100),(100,1000),(1000,1000000)]
-    final_table = {'DE_Gene':distanceGroups,'No_DE_Gene':distanceGroups}
-    for i in range(2):
-        df2 = df[df['DE_Gene'] == i]
+    distanceGroups = ['Present Within','Present Within 0-100','Present Within 100-1000','Present Outside 1000']
+    distanceGroups = {distance_group:0 for distance_group in distanceGroups}
+    distances = [(0,),(0,100),(100,1000),(1000,1000000)]
+    final_table_keys = ['DE_Gene','No_DE_Gene']
+    final_table = {key:distanceGroups for key in final_table_keys}
+
+    for i in [False,True]:
+        df2 = df[df['DE_GENE']==i]
+        print df2
+        #print sum(df2['Distance'].as_matrix().astype(np.int) > 0)
         for j in range(len(distances)):
             if len(distances[j]) == 1:
-                final_table[final_table.keys()[i]]['Present Within'] = sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
+                print 'A'
+                print sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
+                final_table[final_table_keys[int(i)]]['Present Within'] = sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
             else:
-                final_table[final_table.keys()[i]][distanceGroups.keys()[j]] = sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][0])))
+                print 'B'
+                print sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
+                final_table[final_table_keys[int(i)]][distanceGroups.keys()[j]] = sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
     df = pd.DataFrame(final_table)
+    print df
     df.to_csv('CNSvsDE_final.csv',index=False)
+
+    # FIXME DEBUG ABOVE, SO CLOSE!!!
 
 #################################################################################################
 ############################## CONVERT TREE TO DISTANCE MATRIX ##################################
