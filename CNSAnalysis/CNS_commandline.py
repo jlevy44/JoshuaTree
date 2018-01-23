@@ -42,6 +42,50 @@ def runCNSAnalysis():
     subprocess.call('python runCNSAnalysis.py')
 
 
+######################################################################################################
+############################# COMPARE CNS TO DIFF EXPRESSION RESULTS #################################
+
+@begin.subcommand
+def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_genes,
+    #all_genes = np.vectorize(lambda x: x.strip('"'))(os.popen("awk -F'[,=]' '{print $1}' %s"%all_genes).read().splitlines()[1:])
+    DE_genes = np.vectorize(lambda x: x.strip('"'))(os.popen("awk -F'[,=]' '{print $1}' %s"%DE_genes).read().splitlines()[1:])
+    #non_DE_genes = np.setdiff1d(all_genes,DE_genes)
+    if shortname2name.endswith('.txt'):
+        with open(shortname2name,'r') as f:
+            shortname2name = dict([tuple(line.split()) for line in f.read().striplines() if line])
+    else:
+        shortname2name = {shortname:name for shortname,name in [shortname_dict.split(':') for shortname_dict in shortname2name.split(',')]}
+    dist_mat = tree2matrix(tree_file).rename(index=shortname2name,columns=shortname2name)
+    final_array = []
+    with open(CNS_bed,'r') as f:
+        for line in f:
+            if line:
+                ll = line.split('closestGene=')
+                MASegs = ll[0].split()[1].split('|')
+                ll2 = ll[1].split(';')
+                genes = ll2[0].split('|')
+                distance = ll2[1].replace('distance=','')
+                for MASeg in MASegs:
+                    species_cons = dict([species.split(':') for species in MASeg.split(';')[1].split(',')])
+                    present_species = [species for species in species_cons if int(species_cons[species])]
+                    conservation_score = np.sum(np.vectorize(lambda x: dist_mat[x][main_species] if x != main_species else 0)(present_species))
+                    for gene in genes:
+                        final_array.append([gene in DE_genes,distance,conservation_score])
+    df = pd.DataFrame(final_array,columns=['DE_GENE','Distance','Conservation_Score'])
+    df.to_csv('CNSvsDE_raw.csv')
+    distanceGroups = {'Present Within':0,'Present Within 0-100':0,'Present Within 100-1000':0,'Present Outside 1000':0}
+    distances = [(0),(0,100),(100,1000),(1000,1000000)]
+    final_table = {'DE_Gene':distanceGroups,'No_DE_Gene':distanceGroups}
+    for i in range(2):
+        df2 = df[df['DE_Gene'] == i]
+        for j in range(len(distances)):
+            if len(distances[j]) == 1:
+                final_table[final_table.keys()[i]]['Present Within'] = sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
+            else:
+                final_table[final_table.keys()[i]][distanceGroups.keys()[j]] = sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][0])))
+    df = pd.DataFrame(final_table)
+    df.to_csv('CNSvsDE_final.csv',index=False)
+
 #################################################################################################
 ############################## CONVERT TREE TO DISTANCE MATRIX ##################################
 
@@ -59,6 +103,7 @@ def tree2matrix(tree_file,distance_matrix = 'distance_matrix.csv'):
             df.set_value(i,j,distance)
             df.set_value(j,i,distance)
     df.to_csv(distance_matrix)
+    return df
 
 @begin.subcommand
 def replace_species_names(csv_file, reverse_lookup_dict):
@@ -167,10 +212,25 @@ def run_phyml(phylip_in,bootstrap):
     subprocess.call([phymlLine, '-i', phylip_in, '-s', 'BEST', '-q', '-b', bootstrap, '-m', 'GTR'])
 
 @begin.subcommand
-def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species):
+def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, build_tree):
     #run_phyml(aln_syn,'1')
-    subprocess.call('ete3 build -n %s -o syn_tree/ --clearall -w none-none-none-%s_default'%(aln_syn,phyml_fasttree),shell=True)
-    subprocess.call('ete3 build -n %s -o non_syn_tree/ --clearall -w none-none-none-%s_default'%(aln_non_syn,phyml_fasttree),shell=True)
+    if int(build_tree):
+        subprocess.call('ete3 build -n %s -o syn_tree/ --clearall -w none-none-none-%s_default'%(aln_syn,phyml_fasttree),shell=True)
+        subprocess.call('ete3 build -n %s -o non_syn_tree/ --clearall -w none-none-none-%s_default'%(aln_non_syn,phyml_fasttree),shell=True)
+
+    # get distances between reference and list of species
+    tree2matrix('syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_syn),'synonymous_dist_matrix.csv')
+    tree2matrix('non_syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_non_syn),'non-synonymous_dist_matrix.csv')
+    list_species = list_species.split(',')
+    syn_dist = pd.read_csv('synonymous_dist_matrix.csv',index_col=[0])
+    non_syn_dist = pd.read_csv('non-synonymous_dist_matrix.csv',index_col=[0])
+    df = pd.DataFrame(index=[aln_type+reference for aln_type in ['syn:','non-syn:']],columns=list_species)
+    for species in list_species:
+        df.set_value('syn:'+reference,species,syn_dist[reference][species])
+        df.set_value('non-syn:'+reference,species,non_syn_dist[reference][species])
+    df.to_csv('syn_non-syn_comparison_%s.csv'%reference)
+
+    # FIXME Find way to compare two models
     neutral_tree = EvolTree('syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_syn))
     with open(aln_syn,'r') as f:
         neutral_tree.link_to_alignment(f.read())
@@ -181,20 +241,6 @@ def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species):
     non_syn_tree.run_model('fb')
     print neutral_tree.get_evol_model('fb')
     print non_syn_tree.get_evol_model('fb')
-
-    # get distances between reference and list of species
-    tree2matrix('syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_non_syn),'synonymous_dist_matrix.csv')
-    tree2matrix('non_syn_tree/none-none-none-%s_default/%s.final_tree.nw'%(phyml_fasttree,aln_non_syn),'non-synonymous_dist_matrix.csv')
-    list_species = list_species.split(',')
-    syn_dist = pd.read_csv('synonymous_dist_matrix.csv')
-    non_syn_dist = pd.read_csv('non-synonymous_dist_matrix.csv')
-    df = pd.DataFrame(index=[aln_type+reference for aln_type in ['syn:','non-syn:']],columns=list_species)
-    for species in list_species:
-        df['syn:'+reference,species] = syn_dist[reference,species]
-        df['non-syn:'+reference,species] = non_syn_dist[reference,species]
-    df.to_csv('syn_non-syn_comparison_%s.csv'%reference)
-
-    # FIXME Find way to compare two models
 
 
 
