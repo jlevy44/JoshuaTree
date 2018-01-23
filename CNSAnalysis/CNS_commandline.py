@@ -47,6 +47,7 @@ def runCNSAnalysis():
 
 @begin.subcommand
 def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_genes,
+    from scipy.stats import chi2_contingency
     #all_genes = np.vectorize(lambda x: x.strip('"'))(os.popen("awk -F'[,=]' '{print $1}' %s"%all_genes).read().splitlines()[1:])
     DE_genes = np.vectorize(lambda x: x.strip('"'))(os.popen("awk -F'[,=]' '{print $1}' %s"%DE_genes).read().splitlines()[1:])
     #non_DE_genes = np.setdiff1d(all_genes,DE_genes)
@@ -75,29 +76,31 @@ def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_gen
     df = pd.DataFrame(final_array,columns=['DE_GENE','Distance','Conservation_Score'])
     print df
     df.to_csv('CNSvsDE_raw.csv')
-    distanceGroups = ['Present Within','Present Within 0-100','Present Within 100-1000','Present Outside 1000']
-    distanceGroups = {distance_group:0 for distance_group in distanceGroups}
+    distanceGroups_keys = ['Present Within','Present Within 0-100','Present Within 100-1000','Present Outside 1000']
     distances = [(0,),(0,100),(100,1000),(1000,1000000)]
     final_table_keys = ['DE_Gene','No_DE_Gene']
-    final_table = {key:distanceGroups for key in final_table_keys}
+    final_table = {key:{distance_group:0 for distance_group in distanceGroups_keys} for key in final_table_keys}
 
-    for i in [False,True]:
+    for i,DE in [(False,'No_DE_Gene'),(True,'DE_Gene')]:
         df2 = df[df['DE_GENE']==i]
-        print df2
+        #print df2
         #print sum(df2['Distance'].as_matrix().astype(np.int) > 0)
         for j in range(len(distances)):
+            print DE,distanceGroups_keys[j]
             if len(distances[j]) == 1:
-                print 'A'
-                print sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
-                final_table[final_table_keys[int(i)]]['Present Within'] = sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
+                #print 'A'
+                #print sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
+                final_table[DE]['Present Within'] = sum(df2['Distance'].as_matrix().astype(np.int) == distances[j][0])
             else:
-                print 'B'
-                print sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
-                final_table[final_table_keys[int(i)]][distanceGroups.keys()[j]] = sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
+                #print 'B'
+                #print sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
+                final_table[DE][distanceGroups_keys[j]] = sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
+        print final_table
     df = pd.DataFrame(final_table)
     print df
     df.to_csv('CNSvsDE_final.csv',index=False)
-
+    chi_sq = chi2_contingency(df.as_matrix())
+    print chi_sq
     # FIXME DEBUG ABOVE, SO CLOSE!!!
 
 #################################################################################################
