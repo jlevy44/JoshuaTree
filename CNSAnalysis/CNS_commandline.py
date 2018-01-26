@@ -101,6 +101,7 @@ def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_gen
     df.to_csv('CNSvsDE_final.csv',index=False)
     chi_sq = chi2_contingency(df.as_matrix())
     print chi_sq
+    pd.DataFrame(np.array(chi_sq)).to_csv('CNSvsDE_final_chisq.csv',index=False)
     # FIXME DEBUG ABOVE, SO CLOSE!!!
 
 #################################################################################################
@@ -259,11 +260,6 @@ def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, 
     print neutral_tree.get_evol_model('fb')
     print non_syn_tree.get_evol_model('fb')
 
-
-
-
-
-
 #########################################################################
 ############################ VCF FILTER WORK ############################
 
@@ -351,6 +347,7 @@ def sort_vcf(vcf_in,vcf_out):
                 | bgzip -c > {1}.gz
                 bcftools index {1}.gz""".format(vcf_in,vcf_out), shell=True)
 
+
 #########################################################################
 ############################ MAF FILTER WORK ############################
 
@@ -384,21 +381,21 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
     input.file=./out_maf.maf
     input.format=Maf
     output.log=out.log
-    maf.filter=\
-        Subset(\
-                strict=yes,\
-                keep=no,\
-                species=(%s),\
-                remove_duplicates=yes),\
-        Subset(\
-                strict=yes,\
-                keep=yes,\
-                species=(%s),\
-                remove_duplicates=yes),\
-        VcfOutput(\
-                file=vcfs/Out%d_all.vcf,\
-                genotypes=(%s),\
-                all=no,\
+    maf.filter=\\
+        Subset(\\
+                strict=yes,\\
+                keep=no,\\
+                species=(%s),\\
+                remove_duplicates=yes),\\
+        Subset(\\
+                strict=yes,\\
+                keep=yes,\\
+                species=(%s),\\
+                remove_duplicates=yes),\\
+        VcfOutput(\\
+                file=vcfs/Out%d_all.vcf,\\
+                genotypes=(%s),\\
+                all=no,\\
                 reference=%s)
             """%(','.join(all_species),reference_species,i,','.join(species),reference_species))
         subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
