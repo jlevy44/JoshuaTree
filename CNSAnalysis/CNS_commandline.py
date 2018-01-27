@@ -347,6 +347,29 @@ def sort_vcf(vcf_in,vcf_out):
                 | bgzip -c > {1}.gz
                 bcftools index {1}.gz""".format(vcf_in,vcf_out), shell=True)
 
+@begin.subcommand
+def concat_vcf(list_vcfs,vcf_out):#,vcf_out):
+    list_vcfs = list_vcfs.split(',')
+    master_df = pd.DataFrame()
+    header_lines = []
+    for vcf_in in list_vcfs:
+        with os.popen('zcat %s'%vcf_in) as f:
+            for line in f:
+                header_lines.append(line)
+                if line.startswith('#CHROM'):
+                    line_info = line.strip('/n').split()
+                    break
+        master_df = master_df.append(pd.DataFrame(np.hstack([np.array(os.popen("zcat %s | grep -v ^# | awk '{ print $%d }'"%(vcf_in,i+1)).read().splitlines())[:,None] for i in range(len(line_info))]),columns = line_info))
+    header_lines = set(header_lines)
+    master_df = master_df.sort_values(['#CHROM','POS'])
+    #print master_df
+    master_df.to_csv(vcf_out,sep='\t',index=False, na_rep = '.')
+    with open(vcf_out.replace('.vcf','.headers.vcf'),'w') as f, open(vcf_out,'r') as f2:
+        for line in [line2 for line2 in header_lines if '#CHROM' not in line2]:
+            f.write(line)
+        f.write(f2.read())
+    subprocess.call('mv %s %s'%(vcf_out.replace('.vcf','.headers.vcf'),vcf_out),shell=True)
+    #print master_df
 
 #########################################################################
 ############################ MAF FILTER WORK ############################
@@ -412,10 +435,12 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
             #tabix -p vcf %s.gz
         # change the coordinate system and sort the file, also remove empty vcf files, fix merge/concat
     # FIXME problem with overlaps, --allow overlaps works with some analyses but not others, may want to just throw in contig list!!! below
-    subprocess.call('bcftools concat%s -O v -o vcfs/final_all.vcf %s'%(' --allow-overlaps' if overlaps else '',' '.join(finalOutVCFFiles)),shell=True)
+    concat_vcf(','.join(finalOutVCFFiles),'vcfs/final_all_sorted.vcf')
+    #subprocess.call('bcftools concat%s -O v -o vcfs/final_all.vcf %s'%(' --allow-overlaps' if overlaps else '',' '.join(finalOutVCFFiles)),shell=True)
     #subprocess.call("sed 's/##source=Bio++/##INFO=<ID=AC>/g' vcfs/final_all.vcf > vcfs/final_all_edit.vcf && mv vcfs/final_all_edit.vcf vcfs/final_all.vcf && rm vcfs/final_all_edit.vcf",shell=True)
-    sort_vcf('vcfs/final_all.vcf','vcfs/final_all_sorted.vcf')
-    subprocess.call('rm vcfs/final_all_sorted.vcf && zcat vcfs/final_all_sorted.vcf.gz > vcfs/final_all_sorted.vcf',shell=True)
+    #sort_vcf('vcfs/final_all.vcf','vcfs/final_all_sorted.vcf')
+    #subprocess.call('rm vcfs/final_all_sorted.vcf',shell=True)
+    #subprocess.call('zcat vcfs/final_all_sorted.vcf.gz > vcfs/final_all_sorted.vcf',shell=True)
 
     #subprocess.call('bcftools sort -o vcfs/final_all_sorted.vcf vcfs/final_all.vcf',shell=True)
     #FIXME add sort function
