@@ -46,6 +46,99 @@ def runCNSAnalysis():
 ############################# COMPARE CNS TO DIFF EXPRESSION RESULTS #################################
 
 @begin.subcommand
+def CNS_matrix_generation(CNS_bed):
+    with open(CNS_bed,'r') as f:
+        line = f.readline()
+        #print line.split(';')[1].split(',')
+        species = [sp.split(':')[0] for sp in line.split(';')[1].split(',')]
+        f.seek(0)
+        final_array = []
+        for line in f:
+            if line:
+                ll = line.split('closestGene=')
+                MASegs = ll[0].split()[-1].split('|')
+                ll2 = ll[1].split(';')
+                genes = ll2[0].split('|')
+                distance = ll2[1].replace('distance=','')
+                for MASeg in MASegs:
+                    for gene in genes:
+                        final_array.append([gene,distance]+[int(sp.split(':')[1]) for sp in MASeg.split(';')[1].split(',')])
+    #print species
+    df = pd.DataFrame(final_array,columns=['gene','distance']+species)
+    df.to_csv(CNS_bed.replace('.bed','_matrix.csv'),index=False)
+    return df
+
+@begin.subcommand
+def CNS_RetentionvsGeneticDistance(CNS_bed, reference_species, tree_file, species_file):
+    """Reference should be CNS bed species"""
+    import plotly.graph_objs as go
+    import plotly.offline as py
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+    from scipy import stats
+    tree_mat = tree2matrix(tree_file)
+    #genetic_distances = tree_mat[reference_species]
+    species = tree_mat.index.values
+    print tree_mat
+    print species
+    #FIXME binarize CNS matrix
+    included_species = os.popen('cat '+species_file).read().splitlines()
+    if not included_species:
+        included_species = species
+    refs = reference_species.split(',')
+    c = ['hsl(' + str(h) + ',50%' + ',50%)' for h in np.linspace(0, 360, len(set(refs)) + 2)]
+    plots = []
+    retention_rates = {ref:defaultdict(list) for ref in refs}
+    x_f, y_f = [],[]
+    for i,ref in enumerate(refs):
+        CNS_bed = CNS_bed[:CNS_bed.rfind('/')+1]+ref+'_AllCNSElements.bed'
+        CNS_matrix = CNS_matrix_generation(CNS_bed).drop_duplicates()
+        print CNS_matrix
+        CNS_matrix = CNS_matrix.iloc[:,2:]
+        print CNS_matrix
+        total_CNS = CNS_matrix.shape[0]
+        plt.figure()
+        x = []
+        y = []
+        name = []
+        for sp in species:
+            if sp != reference_species:
+                distance = tree_mat[sp][ref] #FIXME debug
+                retention_rate = float(len(CNS_matrix[sp][CNS_matrix[sp] > 0].as_matrix()))/total_CNS
+                plt.scatter(retention_rate,distance,s=3,label=sp)
+                x_f.append(distance)
+                y_f.append(retention_rate)
+                if sp in included_species:
+                    retention_rates[ref][sp] = retention_rate
+                    y.append(retention_rate)
+                    x.append(distance)
+                    name.append(sp)
+        plots.append(go.Scatter(x=x, y=y, name=ref,
+                     mode='markers',
+                     marker=dict(size=8,color=c[i]), text=name))
+        print(x,y,name)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+        plt.xlabel('CNS Retention Rate')
+        plt.ylabel('Genetic Distance')
+        plt.title(reference_species+' CNS Retention Rate vs Genetic Distance, %s'%ref)
+        plt.savefig('CNS_retention_vs_distance_%s.pdf'%ref,dpi=300)
+        #FIXME fix local PCA
+    py.plot(go.Figure(data=plots,layout=go.Layout(title='Genetic Distance to Reference vs CNS Retention',yaxis=dict(title='Percent of CNS Elements Retained With Respect to Reference'),xaxis=dict(title='Genetic Distance from Reference'))),filename='CNS_retention_vs_distance.html',auto_open=False)
+    plots = []
+    for ref in refs:
+        plots.append(go.Bar(x=retention_rates[ref].keys(),y=retention_rates[ref].values(),name=ref))# FIXME finish, add tests for independence between genetic distance and retention, check if polyploid reduction in retention
+    py.plot(go.Figure(data=plots,layout=go.Layout({'barmode':'group'})),filename='CNS_retention.html',auto_open=False)
+    x_f = np.nan_to_num(np.array(x_f))
+    y_f = np.nan_to_num(np.array(y_f))
+    print x_f,y_f
+    p = np.polyfit(x_f,y_f,1)
+    f = lambda x: np.polyval(p,x)
+    expected = f(x_f)
+    chi_sq = sum((y_f - expected)**2/expected)
+    print('X^2',chi_sq,'p',1-stats.chi2.cdf(chi_sq,len(x_f)-2),'r',stats.pearsonr(x_f,y_f))
+    # FIXME Chi-square doesn't matter if you do not have any uncertainty about the y-data point
+
+@begin.subcommand
 def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_genes,
     from scipy.stats import chi2_contingency
     #all_genes = np.vectorize(lambda x: x.strip('"'))(os.popen("awk -F'[,=]' '{print $1}' %s"%all_genes).read().splitlines()[1:])
@@ -76,8 +169,8 @@ def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_gen
     df = pd.DataFrame(final_array,columns=['DE_GENE','Distance','Conservation_Score'])
     print df
     df.to_csv('CNSvsDE_raw.csv')
-    distanceGroups_keys = ['Present Within','Present Within 0-100','Present Within 100-1000','Present Outside 1000']
-    distances = [(0,),(0,100),(100,1000),(1000,1000000)]
+    distanceGroups_keys = ['Present','Absent']#['Present Within','Present Within 0-100','Present Within 100-1000','Present Outside 1000']
+    distances = [(0,2001),(2001,10000000)]#[(0,),(0,100),(100,1000),(1000,1000000)]
     final_table_keys = ['DE_Gene','No_DE_Gene']
     final_table = {key:{distance_group:0 for distance_group in distanceGroups_keys} for key in final_table_keys}
 
@@ -94,14 +187,14 @@ def CNSvsDE(DE_genes, tree_file, shortname2name, main_species, CNS_bed):#all_gen
             else:
                 #print 'B'
                 #print sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
-                final_table[DE][distanceGroups_keys[j]] = sum(((df2['Distance'].as_matrix().astype(np.int) > distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) <= distances[j][1])))
+                final_table[DE][distanceGroups_keys[j]] = sum(((df2['Distance'].as_matrix().astype(np.int) >= distances[j][0])&(df2['Distance'].as_matrix().astype(np.int) < distances[j][1])))
         print final_table
     df = pd.DataFrame(final_table)
     print df
     df.to_csv('CNSvsDE_final.csv',index=False)
     chi_sq = chi2_contingency(df.as_matrix())
     print chi_sq
-    pd.DataFrame(np.array(chi_sq)).to_csv('CNSvsDE_final_chisq.csv',index=False)
+    pd.DataFrame(np.array(chi_sq[:2])).to_csv('CNSvsDE_final_chisq.csv',index=False)
     # FIXME DEBUG ABOVE, SO CLOSE!!!
 
 #################################################################################################
@@ -224,8 +317,8 @@ def reroot_Tree(tree_in,root_species,tree_out):
 @begin.subcommand
 def run_phyml(phylip_in,bootstrap):
     if phylip_in.endswith('.fasta') or phylip_in.endswith('.fa'):
-        subprocess.call(['perl', 'Fasta2Phylip.pl', phylip_in, phylip_in.replace('fasta','phylip')])
-        phylip_in = phylip_in.replace('fasta','phylip')
+        subprocess.call(['perl', 'Fasta2Phylip.pl', phylip_in, phylip_in.replace('fasta','phylip').replace('fa','phylip')])
+        phylip_in = phylip_in.replace('fasta','phylip').replace('fa','phylip')
     phymlLine = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/bin/ete3_apps/bin/phyml'
     subprocess.call([phymlLine, '-i', phylip_in, '-s', 'BEST', '-q', '-b', bootstrap, '-m', 'GTR'])
 
@@ -348,19 +441,69 @@ def sort_vcf(vcf_in,vcf_out):
                 bcftools index {1}.gz""".format(vcf_in,vcf_out), shell=True)
 
 @begin.subcommand
+def merge_vcf(list_vcfs,vcf_out,excluded_species_txt, reference_species):
+    excluded_species = excluded_species_txt.split(',')#os.popen('cat %s'%excluded_species_txt).read().splitlines()
+    list_vcfs = list_vcfs.split(',')
+    master_df = []
+    header_lines = []
+    print list_vcfs
+    for vcf_in in list_vcfs:
+        with os.popen(('z' if vcf_in.endswith('.gz') else '')+'cat %s'%vcf_in) as f:
+            line_count = 0
+            for line in f:
+                header_lines.append(line)
+                if line.startswith('#CHROM'):
+                    line_info = line.strip('/n').split() # FIXME can grab header line number here
+                    break
+                line_count += 1
+        if vcf_in.endswith('.gz'):
+            master_df.append(pd.DataFrame(np.hstack([np.array(os.popen(('z' if vcf_in.endswith('.gz') else '')+"cat %s | grep -v ^# | awk '{ print $%d }'"%(vcf_in,i+1)).read().splitlines())[:,None] for i in range(len(line_info))]),columns = line_info))
+        else:
+            print vcf_in
+            print line_count
+
+            master_df.append(pd.read_table(vcf_in,header=line_count))
+    print master_df
+    master_df = reduce(lambda x,y: pd.merge(x,y,on=['#CHROM','POS','REF', reference_species, 'QUAL', 'FORMAT']),master_df)
+    print master_df
+    header_lines = set(header_lines)
+    master_df['POS'] = np.vectorize(int)(master_df['POS'])
+    master_df = master_df.sort_values(['#CHROM','POS'])
+    #master_df = master_df.rename({'ID_x':'ID'})
+    master_df.columns.values[2] = 'ID'
+    master_df.columns.values[7] = 'INFO'
+    master_df = master_df.drop(excluded_species+[info for info in list(master_df) if 'INFO_' in info or 'ID_' in info],axis=1)
+    master_df['INFO'] = '.'
+    master_df.to_csv(vcf_out,sep='\t',index=False, na_rep = '.')
+    with open(vcf_out.replace('.vcf','.headers.vcf'),'w') as f, open(vcf_out,'r') as f2:
+        for line in [line2 for line2 in header_lines if '#CHROM' not in line2]:
+            f.write(line)
+        f.write(f2.read())
+    subprocess.call('mv %s %s'%(vcf_out.replace('.vcf','.headers.vcf'),vcf_out),shell=True)
+
+
+@begin.subcommand
 def concat_vcf(list_vcfs,vcf_out):#,vcf_out):
     list_vcfs = list_vcfs.split(',')
     master_df = pd.DataFrame()
     header_lines = []
+    print list_vcfs
     for vcf_in in list_vcfs:
-        with os.popen('zcat %s'%vcf_in) as f:
+        with os.popen(('z' if vcf_in.endswith('.gz') else '')+'cat %s'%vcf_in) as f:
+            line_count = 0
             for line in f:
                 header_lines.append(line)
                 if line.startswith('#CHROM'):
-                    line_info = line.strip('/n').split()
+                    line_info = line.strip('/n').split() # FIXME can grab header line number here
                     break
-        master_df = master_df.append(pd.DataFrame(np.hstack([np.array(os.popen("zcat %s | grep -v ^# | awk '{ print $%d }'"%(vcf_in,i+1)).read().splitlines())[:,None] for i in range(len(line_info))]),columns = line_info))
+                line_count += 1
+        if vcf_in.endswith('.gz'):
+            master_df = master_df.append(pd.DataFrame(np.hstack([np.array(os.popen(('z' if vcf_in.endswith('.gz') else '')+"cat %s | grep -v ^# | awk '{ print $%d }'"%(vcf_in,i+1)).read().splitlines())[:,None] for i in range(len(line_info))]),columns = line_info))
+        else:
+            master_df = master_df.append(pd.read_table(vcf_in,header=line_count))
+    # FIXME ^^ can use read table instead df = pd.read_table('vcfs/final_all_sorted.vcf',header=6)
     header_lines = set(header_lines)
+    master_df['POS'] = np.vectorize(int)(master_df['POS'])
     master_df = master_df.sort_values(['#CHROM','POS'])
     #print master_df
     master_df.to_csv(vcf_out,sep='\t',index=False, na_rep = '.')
@@ -370,6 +513,8 @@ def concat_vcf(list_vcfs,vcf_out):#,vcf_out):
         f.write(f2.read())
     subprocess.call('mv %s %s'%(vcf_out.replace('.vcf','.headers.vcf'),vcf_out),shell=True)
     #print master_df
+
+#FIXME make a maf/cns matrix function
 
 #########################################################################
 ############################ MAF FILTER WORK ############################
