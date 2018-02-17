@@ -447,33 +447,61 @@ def merge_vcf(list_vcfs,vcf_out,excluded_species_txt, reference_species):
     master_df = []
     header_lines = []
     print list_vcfs
+    species_total = []
     for vcf_in in list_vcfs:
-        with os.popen(('z' if vcf_in.endswith('.gz') else '')+'cat %s'%vcf_in) as f:
+        with (os.popen('zcat %s'%vcf_in) if vcf_in.endswith('.gz') else open(vcf_in,'r')) as f:
             line_count = 0
             for line in f:
                 header_lines.append(line)
                 if line.startswith('#CHROM'):
                     line_info = line.strip('/n').split() # FIXME can grab header line number here
+                    species_total += line_info[9:]
                     break
                 line_count += 1
         if vcf_in.endswith('.gz'):
-            master_df.append(pd.DataFrame(np.hstack([np.array(os.popen(('z' if vcf_in.endswith('.gz') else '')+"cat %s | grep -v ^# | awk '{ print $%d }'"%(vcf_in,i+1)).read().splitlines())[:,None] for i in range(len(line_info))]),columns = line_info))
+            df = pd.DataFrame(np.hstack([np.array(os.popen(('z' if vcf_in.endswith('.gz') else '')+"cat %s | grep -v ^# | awk '{ print $%d }'"%(vcf_in,i+1)).read().splitlines())[:,None] for i in range(len(line_info))]),columns = line_info)
         else:
             print vcf_in
             print line_count
-
-            master_df.append(pd.read_table(vcf_in,header=line_count))
-    print master_df
+            df = pd.read_table(vcf_in,header=line_count)
+        #print df.iloc[:,9:].as_matrix()
+        for i in range(len(df)):
+            #print i
+            #print dict(list(enumerate(df.loc[i,'ALT'].split(','),1)))
+            #print df.iloc[i,:]
+            #print df.iloc[i,9:].replace(dict(map(lambda x: (str(x[0]),x[1]),enumerate(df.loc[i,'ALT'].split(','),1))))
+            df.iloc[i,9:]=df.iloc[i,9:].replace(dict(map(lambda x: (str(x[0]),x[1]),enumerate(df.loc[i,'ALT'].split(','),1)))) #np.apply_along_axis(lambda i: d[i].get,axis=1,arr=df.iloc[:,9:].as_matrix())#.replace(d)
+            #le = LabelEncoder()
+            #le.fit([df.loc[i,'REF']]+df.loc[i,'ALT'].split(','))
+            #df.loc[i,species] = le.inverse_transform(df.loc[i,species].as_matrix()) #FIXME
+        #print df.iloc[0:10,:]
+        master_df.append(df)
+        del df
+    #print master_df
+    species_total = np.array(set(species_total))
     master_df = reduce(lambda x,y: pd.merge(x,y,on=['#CHROM','POS','REF', reference_species, 'QUAL', 'FORMAT']),master_df)
-    print master_df
+    #print master_df
     header_lines = set(header_lines)
     master_df['POS'] = np.vectorize(int)(master_df['POS'])
     master_df = master_df.sort_values(['#CHROM','POS'])
     #master_df = master_df.rename({'ID_x':'ID'})
+    # FIXME look for NA rows, GAPS in reference species!!!!!!
     master_df.columns.values[2] = 'ID'
     master_df.columns.values[7] = 'INFO'
-    master_df = master_df.drop(excluded_species+[info for info in list(master_df) if 'INFO_' in info or 'ID_' in info],axis=1)
+    #np.apply_along_axis(lambda l: np.sort(l)[0],axis=1,arr=np.hstack(tuple([master_df[filter_name].as_matrix().T for filter_name in list(master_df) if 'FILTER' in filter_name])))
+    #print [master_df[alt_name].as_matrix()[:,None] for alt_name in list(master_df) if 'ALT' in alt_name]
+    #print nunp.hstack(tuple([master_df[alt_name].as_array()[:,None] for alt_name in list(master_df) if 'ALT' in alt_name]))
+    #print np.hstack(tuple([master_df[alt_name].as_matrix()[:,None] for alt_name in list(master_df) if 'ALT' in alt_name])).T
+    master_df['ALT_x']=np.vectorize(lambda x: ','.join(filter(None,sorted(set(x.replace(',',''))))))(reduce(lambda x,y: np.core.defchararray.add(x,y),np.vstack(tuple([master_df[alt_name].as_matrix().astype(str) for alt_name in list(master_df) if 'ALT' in alt_name]))))
+    print master_df.ALT_x
+    #master_df['ALT_x'] = np.vectorize(lambda l: ','.join(sorted(set(''.join(l).strip(',')))))(np.hstack(tuple([master_df[alt_name].as_array()[:,None] for alt_name in list(master_df) if 'ALT' in alt_name])))#np.apply_along_axis(lambda l: ','.join(set(','.join(l).split(','))),axis=1,arr=np.hstack(tuple([master_df[alt_name].as_matrix()[:,None] for alt_name in list(master_df) if 'ALT' in alt_name])))
+    master_df.columns.values[list(master_df).index('ALT_x')] = 'ALT'
+    master_df['FILTER_x'] = np.sort(np.hstack(tuple([master_df[filter_name].as_matrix().T for filter_name in list(master_df) if 'FILTER' in filter_name])),axis=1)[:,0]
+    master_df.columns.values[list(master_df).index('FILTER_x')] = 'FILTER' #FIXME not sure if this is correct
+    master_df = master_df.drop(excluded_species+[info for info in list(master_df) if 'INFO_' in info or 'ID_' in info or 'FILTER_' in info or 'ALT_' in info],axis=1)
     master_df['INFO'] = '.'
+    for i in range(len(master_df)):
+        master_df.loc[i,species_total] = master_df.loc[i,species_total].replace(dict(map(lambda x: (x[1],str(x[0])),enumerate(master_df.loc[i,'ALT'].split(','),1))))
     master_df.to_csv(vcf_out,sep='\t',index=False, na_rep = '.')
     with open(vcf_out.replace('.vcf','.headers.vcf'),'w') as f, open(vcf_out,'r') as f2:
         for line in [line2 for line2 in header_lines if '#CHROM' not in line2]:
