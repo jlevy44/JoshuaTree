@@ -642,10 +642,10 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
     #FIXME add sort function
 
 @begin.subcommand
-def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species, overlaps):
+def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species, merge):
     change_coordinates = int(change_coordinates)
     out_all_species = int(out_all_species)
-    overlaps = int(overlaps)
+    merge = int(merge)
     mafFiles = [file for file in os.listdir('.') if file.endswith('.maf') and file.startswith('FastaOut')]
     try:
         os.mkdir('vcfs')
@@ -662,10 +662,9 @@ def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species,
         species = all_species
     else:
         species = all_species_but_one
-    if 0:
+    if merge:
         subprocess.call('rm merged.maf',shell=True)
-        for file in mafFiles:
-            subprocess.call("sed -e '/Anc/d;/#/d' %s >> merged.maf"%file,shell=True)
+        subprocess.call("cat %s | sed -e '/Anc/d;/#/d' > merged.maf"%(' '.join(mafFiles)),shell=True)
     maf_idx = index_maf_2('merged.maf')
     print maf_idx.keys()[0:10], maf_idx.values()[0:10]
     count = 0
@@ -680,9 +679,17 @@ def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species,
                 maf_sort_structure.append((chrom, position, count))
                 count += 1
                 f2.write(segment)
+    maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
+    maf_idx = index_maf_2('merged.new_coords.maf')
+    maf_idx_sorted = np.array(maf_idx.keys())[maf_sort_structure.as_matrix([2])].T[0].tolist()
+    print maf_idx_sorted
+    with open('merged.new_coords.maf','r') as f, open('merged.new_coords.sorted.maf','w') as f2:
+        for idx in maf_idx_sorted:
+            f.seek(idx)
+            f2.write(f.read(maf_idx[idx] - idx))
     with open('maf_filter_config.bpp','w') as f:
         f.write("""
-    input.file=./merged.maf
+    input.file=./merged.new_coords.sorted.maf
     input.format=Maf
     output.log=out.log
     maf.filter=\\
@@ -731,7 +738,7 @@ def index_maf_2(maf_file):
         offset = 0
         for line in iter(f.readline, ''):
             if line.startswith('a'):
-                print offset,line[0:-1]
+                #print offset,line[0:-1]
                 idxs.append(offset)
             offset = f.tell()
         idxs.append(f.tell())
@@ -913,11 +920,7 @@ def maf_change_coordinates(segment,ref_species):
             if orientation == '-':
                 lineList[2] = str(int(lineList3[-1])-int(lineList[2]))#-int(lineList[3]))
             else:
-                try:
-                    lineList[2] = str(int(lineList3[-2]) + int(lineList[2]))
-                except:
-                    print line
-                    quit()
+                lineList[2] = str(int(lineList3[-2]) + int(lineList[2]))
             lineList[1] = '.'.join(lineList2)#FIXME  '.'.join(lineList2[::2])
             aln_lines[i] = '\t'.join(lineList)
             if lineList2[0] == ref_species:
