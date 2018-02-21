@@ -673,13 +673,13 @@ def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species,
     with open('merged.maf','r') as f, open('merged.new_coords.maf','w') as f2:
         for idx in maf_idx:
             #print maf_idx[idx], idx
-            f.seek(idx)
             #print f.read(maf_idx[idx] - idx)
             f.seek(idx)
             chrom, position, segment = maf_change_coordinates(f.read(maf_idx[idx] - idx),reference_species)
-            maf_sort_structure.append((chrom, position, count))
-            count += 1
-            f2.write(segment)
+            if chrom:
+                maf_sort_structure.append((chrom, position, count))
+                count += 1
+                f2.write(segment)
     with open('maf_filter_config.bpp','w') as f:
         f.write("""
     input.file=./merged.maf
@@ -913,13 +913,20 @@ def maf_change_coordinates(segment,ref_species):
             if orientation == '-':
                 lineList[2] = str(int(lineList3[-1])-int(lineList[2]))#-int(lineList[3]))
             else:
-                lineList[2] = str(int(lineList3[-2]) + int(lineList[2]))
+                try:
+                    lineList[2] = str(int(lineList3[-2]) + int(lineList[2]))
+                except:
+                    print line
+                    quit()
             lineList[1] = '.'.join(lineList2)#FIXME  '.'.join(lineList2[::2])
             aln_lines[i] = '\t'.join(lineList)
             if lineList2[0] == ref_species:
                 chrom = lineList2[2]
                 position = int(lineList[2])
-    return chrom,position,'\n'.join(sorted(filter(None,aln_lines)))+'\n\n'
+    try:
+        return chrom,position,'\n'.join(sorted(filter(None,aln_lines)))+'\n\n'
+    except:
+        return '', '', ''
 
 @begin.subcommand
 def selective_pressure_statistics(cns_config,reference_species, min_block_length, dist_max, window_size, root_species): # FIXME add ingroup outgroup options, maybe add ability to output unrooted tree !!!!!!  12/18/17
