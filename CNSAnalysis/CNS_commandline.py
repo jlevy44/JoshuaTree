@@ -357,6 +357,29 @@ def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, 
 ############################ VCF FILTER WORK ############################
 
 @begin.subcommand
+def generate_new_header(sort_vcf_in):
+    header_line = '\n'+os.popen("grep '^#CHROM' %s"%sort_vcf_in).read().strip('\n')
+    chrms = set(os.popen("awk '{ print $1}' %s | grep -v ^#"%sort_vcf_in).read().splitlines())
+    new_lines = """##fileformat=VCFv4.1\n"""+'\n'.join(sorted(['##contig=<ID=' + chrm + ',length=' + os.popen('grep %s %s | tail -n 1'%(chrm,sort_vcf_in)).read().strip('/n').split()[1] + '>' for chrm in chrms]))+header_line
+    with open('new_header.txt','w') as f:
+        f.write(new_lines+'\n')
+    subprocess.call("""(cat new_header.txt;
+                        cat %s | grep -v ^#;) \
+                        > %s"""%(sort_vcf_in,sort_vcf_in.replace('.vcf','.new_head.vcf')),shell=True)
+    df = pd.read_table(sort_vcf_in.replace('.vcf','.new_head.vcf'),header=new_lines.count('\n')).fillna('.')
+    df['INFO'] = '.'
+    df['FILTER'] = '.'
+    df['FORMAT'] = '.'
+    df.to_csv(sort_vcf_in.replace('.vcf','.new_head.vcf'),sep='\t',index=False, na_rep = '.')
+    subprocess.call("""(cat new_header.txt;
+                        cat %s | grep -v ^#;) \
+                        > %s"""%(sort_vcf_in.replace('.vcf','.new_head.vcf'),sort_vcf_in.replace('.vcf','.new_head_final.vcf')),shell=True)
+
+
+
+
+
+@begin.subcommand
 def intersect_vcf(vcf_in, bed_regions, vcf_out):
     subprocess.call('bedtools intersect -wa -a %s -b %s > %s'%(vcf_in, bed_regions, vcf_out),shell=True)
 
@@ -463,7 +486,7 @@ def merge_vcf(list_vcfs,vcf_out,excluded_species_txt, reference_species):
         else:
             print vcf_in
             print line_count
-            df = pd.read_table(vcf_in,header=line_count)
+            df = pd.read_table(vcf_in,header=line_count).fillna('.')
         #print df.iloc[:,9:].as_matrix()
         for i in range(len(df)):
             #print i
@@ -479,7 +502,8 @@ def merge_vcf(list_vcfs,vcf_out,excluded_species_txt, reference_species):
         del df
     #print master_df
     species_total = np.array(set(species_total))
-    master_df = reduce(lambda x,y: pd.merge(x,y,on=['#CHROM','POS','REF', reference_species, 'QUAL', 'FORMAT']),master_df)
+    master_df = reduce(lambda x,y: pd.merge(x,y,on=['#CHROM','POS','REF', reference_species, 'QUAL', 'FORMAT'], how='inner'),master_df)
+    master_df.dropna(inplace=True)
     #print master_df
     header_lines = set(header_lines)
     master_df['POS'] = np.vectorize(int)(master_df['POS'])
@@ -614,9 +638,75 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
     #sort_vcf('vcfs/final_all.vcf','vcfs/final_all_sorted.vcf')
     #subprocess.call('rm vcfs/final_all_sorted.vcf',shell=True)
     #subprocess.call('zcat vcfs/final_all_sorted.vcf.gz > vcfs/final_all_sorted.vcf',shell=True)
-
     #subprocess.call('bcftools sort -o vcfs/final_all_sorted.vcf vcfs/final_all.vcf',shell=True)
     #FIXME add sort function
+
+@begin.subcommand
+def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species, overlaps):
+    change_coordinates = int(change_coordinates)
+    out_all_species = int(out_all_species)
+    overlaps = int(overlaps)
+    mafFiles = [file for file in os.listdir('.') if file.endswith('.maf') and file.startswith('FastaOut')]
+    try:
+        os.mkdir('vcfs')
+    except:
+        pass
+    if cns_config.endswith('.txt'):
+        with open(cns_config,'r') as f:
+            master_species = parseConfigFindList("masterListSpecies",f)
+    else:
+        master_species = cns_config.split(',')
+    all_species = set([species.split('_')[0] for species in master_species])
+    all_species_but_one = all_species - {reference_species}
+    if out_all_species:
+        species = all_species
+    else:
+        species = all_species_but_one
+    if 0:
+        subprocess.call('rm merged.maf',shell=True)
+        for file in mafFiles:
+            subprocess.call("sed -e '/Anc/d;/#/d' %s >> merged.maf"%file,shell=True)
+    maf_idx = index_maf_2('merged.maf')
+    print maf_idx.keys()[0:10], maf_idx.values()[0:10]
+    count = 0
+    maf_sort_structure = []
+    with open('merged.maf','r') as f, open('merged.new_coords.maf','w') as f2:
+        for idx in maf_idx:
+            #print maf_idx[idx], idx
+            f.seek(idx)
+            #print f.read(maf_idx[idx] - idx)
+            f.seek(idx)
+            chrom, position, segment = maf_change_coordinates(f.read(maf_idx[idx] - idx),reference_species)
+            maf_sort_structure.append((chrom, position, count))
+            count += 1
+            f2.write(segment)
+    with open('maf_filter_config.bpp','w') as f:
+        f.write("""
+    input.file=./merged.maf
+    input.format=Maf
+    output.log=out.log
+    maf.filter=\\
+        Subset(\\
+                strict=yes,\\
+                keep=no,\\
+                species=(%s),\\
+                remove_duplicates=yes),\\
+        Subset(\\
+                strict=yes,\\
+                keep=yes,\\
+                species=(%s),\\
+                remove_duplicates=yes),\\
+        VcfOutput(\\
+                file=vcfs/merged.vcf,\\
+                genotypes=(%s),\\
+                all=no,\\
+                reference=%s)
+            """%(','.join(all_species),reference_species,','.join(species),reference_species))
+    subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
+    concat_vcf('vcfs/merged.vcf','vcfs/final.vcf')
+    generate_new_header('vcfs/final.vcf')
+
+
 
 @begin.subcommand
 def index_maf(maf_file, ref_species):
@@ -639,11 +729,14 @@ def index_maf_2(maf_file):
     idxs = []
     with open(maf_file,'r') as f:
         offset = 0
-        for line in f:
+        for line in iter(f.readline, ''):
             if line.startswith('a'):
+                print offset,line[0:-1]
                 idxs.append(offset)
             offset = f.tell()
         idxs.append(f.tell())
+    idxs = sorted(set(idxs))
+    #print idxs[0:10]
     return {idxs[i]:idxs[i+1] for i in range(len(idxs)-1)}
 
 @begin.subcommand
