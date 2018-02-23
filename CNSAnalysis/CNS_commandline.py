@@ -464,7 +464,17 @@ def sort_vcf(vcf_in,vcf_out):
                 bcftools index {1}.gz""".format(vcf_in,vcf_out), shell=True)
 
 @begin.subcommand
-def merge_vcf(list_vcfs,vcf_out,excluded_species_txt, reference_species):
+def merge_vcf(list_vcfs, vcf_out, excluded_species):
+    list_vcfs = list_vcfs.split(',')
+    #excluded_species = excluded_species.split(',')
+    for vcf in list_vcfs:
+        subprocess.call('bcftools view %s -O z -o %s'%(vcf, vcf+'.gz'),shell=True)
+        subprocess.call('bcftools index %s.gz'%vcf,shell=True)
+    subprocess.call('bcftools merge %s -O v --force-samples -o %s.gz'%(' '.join([vcf+'.gz' for vcf in list_vcfs]), vcf_out),shell=True)
+    subprocess.call('bcftools view %s -O v -s ^%s -o %s'%(vcf_out+'.gz',excluded_species,vcf_out), shell=True)
+
+@begin.subcommand
+def merge_vcf2(list_vcfs,vcf_out,excluded_species_txt, reference_species):
     excluded_species = excluded_species_txt.split(',')#os.popen('cat %s'%excluded_species_txt).read().splitlines()
     list_vcfs = list_vcfs.split(',')
     master_df = []
@@ -642,8 +652,9 @@ def maf2vcf(cns_config, reference_species, change_coordinates, out_all_species, 
     #FIXME add sort function
 
 @begin.subcommand
-def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species, merge):
-    change_coordinates = int(change_coordinates)
+def maf2vcf2(cns_config, reference_species, reference_fai_file, out_all_species, merge):
+    reference_species_chromosomes = dict(zip(os.popen("awk '{print $1}' %s"%reference_fai_file).read().splitlines(),map(int,os.popen("awk '{print $2}' %s"%reference_fai_file).read().splitlines())))
+    print reference_species_chromosomes
     out_all_species = int(out_all_species)
     merge = int(merge)
     mafFiles = [file for file in os.listdir('.') if file.endswith('.maf') and file.startswith('FastaOut')]
@@ -666,19 +677,27 @@ def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species,
         subprocess.call('rm merged.maf',shell=True)
         subprocess.call("cat %s | sed -e '/Anc/d;/#/d' > merged.maf"%(' '.join(mafFiles)),shell=True)
     maf_idx = index_maf_2('merged.maf')
-    print maf_idx.keys()[0:10], maf_idx.values()[0:10]
-    count = 0
-    maf_sort_structure = []
+    idxs = sorted(maf_idx.keys())
+    #print maf_idx.keys()[0:10], maf_idx.values()[0:10]
+    #count = 0
+    #maf_sort_structure = []
+    chunks = [idxs[i:i+50000] for i in range(0,len(idxs),50000)]
     with open('merged.maf','r') as f, open('merged.new_coords.maf','w') as f2:
-        for idx in maf_idx:
+        for chunk in chunks:
             #print maf_idx[idx], idx
             #print f.read(maf_idx[idx] - idx)
-            f.seek(idx)
-            chrom, position, segment = maf_change_coordinates(f.read(maf_idx[idx] - idx),reference_species)
-            if chrom:
-                maf_sort_structure.append((chrom, position, count))
-                count += 1
-                f2.write(segment)
+            out_segments = []
+            for idx in chunk:
+                f.seek(idx)
+                chrom, position, segment = maf_change_coordinates(f.read(maf_idx[idx] - idx),reference_species,reference_species_chromosomes)
+                if chrom:
+                    #maf_sort_structure.append((chrom, position, count))
+                    #count += 1
+                    out_segments.append(segment)
+                    #f2.write(segment)
+            f2.write(''.join(out_segments))
+
+    """
     maf_sort_structure = pd.DataFrame(maf_sort_structure).sort_values([0,1])
     maf_idx = index_maf_2('merged.new_coords.maf')
     maf_idx_sorted = np.array(maf_idx.keys())[maf_sort_structure.as_matrix([2])].T[0].tolist()
@@ -686,10 +705,10 @@ def maf2vcf2(cns_config, reference_species, change_coordinates, out_all_species,
     with open('merged.new_coords.maf','r') as f, open('merged.new_coords.sorted.maf','w') as f2:
         for idx in maf_idx_sorted:
             f.seek(idx)
-            f2.write(f.read(maf_idx[idx] - idx))
+            f2.write(f.read(maf_idx[idx] - idx))""" #.sorted
     with open('maf_filter_config.bpp','w') as f:
         f.write("""
-    input.file=./merged.new_coords.sorted.maf
+    input.file=./merged.new_coords.maf
     input.format=Maf
     output.log=out.log
     maf.filter=\\
@@ -908,7 +927,7 @@ def estimate_phylogeny(cns_config, consensus_algorithm, major_cutoff, min_block_
                 tree = CS.adam_consensus(trees)
             Phylo.write(tree,'./maf_trees/output_tree_consensus_bootstrap.nh','newick')
 
-def maf_change_coordinates(segment,ref_species):
+def maf_change_coordinates(segment,ref_species, ref_species_chr):
     aln_lines = segment.splitlines()
     for i,line in enumerate(aln_lines):
         if line.startswith('s'):
@@ -916,16 +935,21 @@ def maf_change_coordinates(segment,ref_species):
             orientation = lineList[4]
             lineList2 = lineList[1].split('.')
             lineList3 = lineList2[-1].split('_')[-2:]
-            lineList2[2] = lineList2[2].replace('_'+'_'.join(lineList3),'')
-            if orientation == '-':
-                lineList[2] = str(int(lineList3[-1])-int(lineList[2]))#-int(lineList[3]))
+            lineList2[-1] = lineList2[-1].replace('_'+'_'.join(lineList3),'') # 2
+            lineList[1] = '.'.join(lineList2[1:])#FIXME  lineList2
+            if lineList2[0] == ref_species:
+                chrom = lineList2[-1] # 2
+                lineList[5] = str(ref_species_chr[chrom])
+                #print chrom
+                if orientation == '-':
+                    lineList[2] = str(ref_species_chr[chrom]-int(lineList3[-1])+int(lineList[2]))#-int(lineList[3]))
+                else:
+                    lineList[2] = str(int(lineList3[-2]) + int(lineList[2]))
+                position = int(lineList[2])
             else:
                 lineList[2] = str(int(lineList3[-2]) + int(lineList[2]))
-            lineList[1] = '.'.join(lineList2)#FIXME  '.'.join(lineList2[::2])
             aln_lines[i] = '\t'.join(lineList)
-            if lineList2[0] == ref_species:
-                chrom = lineList2[2]
-                position = int(lineList[2])
+
     try:
         return chrom,position,'\n'.join(sorted(filter(None,aln_lines)))+'\n\n'
     except:
