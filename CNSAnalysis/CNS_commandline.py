@@ -360,16 +360,16 @@ def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, 
 def generate_new_header(sort_vcf_in):
     header_line = '\n'+os.popen("grep '^#CHROM' %s"%sort_vcf_in).read().strip('\n')
     chrms = set(os.popen("awk '{ print $1}' %s | grep -v ^#"%sort_vcf_in).read().splitlines())
-    new_lines = """##fileformat=VCFv4.1\n"""+'\n'.join(sorted(['##contig=<ID=' + chrm + ',length=' + os.popen('grep %s %s | tail -n 1'%(chrm,sort_vcf_in)).read().strip('/n').split()[1] + '>' for chrm in chrms]))+header_line
+    new_lines = """##fileformat=VCFv4.1\n"""+'\n'.join(sorted(['##contig=<ID=' + chrm + ',length=' + os.popen('grep %s %s | tail -n 1'%(chrm,sort_vcf_in)).read().strip('/n').split()[1] + '>' for chrm in chrms]))+'\n'+'\n'.join(['##FILTER=<ID=gap,Description="At least one sequence contains a gap">','##FILTER=<ID=unk,Description="At least one sequence contains an unresolved character">','##FILTER=<ID=gunk,Description="At least one sequence contains an unresolved character and gap.">','##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">'])+header_line
     with open('new_header.txt','w') as f:
         f.write(new_lines+'\n')
     subprocess.call("""(cat new_header.txt;
-                        cat %s | grep -v ^#;) \
+                        sed 's/gap,unk/gunk/g' %s | grep -v ^#;) \
                         > %s"""%(sort_vcf_in,sort_vcf_in.replace('.vcf','.new_head.vcf')),shell=True)
     df = pd.read_table(sort_vcf_in.replace('.vcf','.new_head.vcf'),header=new_lines.count('\n')).fillna('.')
     df['INFO'] = '.'
-    df['FILTER'] = '.'
-    df['FORMAT'] = '.'
+    #df['FILTER'] = 'PASS'
+    df['FORMAT'] = 'GT'
     df.to_csv(sort_vcf_in.replace('.vcf','.new_head.vcf'),sep='\t',index=False, na_rep = '.')
     subprocess.call("""(cat new_header.txt;
                         cat %s | grep -v ^#;) \
@@ -464,13 +464,17 @@ def sort_vcf(vcf_in,vcf_out):
                 bcftools index {1}.gz""".format(vcf_in,vcf_out), shell=True)
 
 @begin.subcommand
-def merge_vcf(list_vcfs, vcf_out, excluded_species):
+def merge_vcf(list_vcfs, vcf_out, excluded_species, reference_species):
     list_vcfs = list_vcfs.split(',')
-    #excluded_species = excluded_species.split(',')
+    excluded_species = ','.join(excluded_species.split(',')+['%d:%s'%(i+2,reference_species) for i in range(len(list_vcfs) - 1)])
+    list_vcfs2 = []
     for vcf in list_vcfs:
+        subprocess.call("(cat %s | grep ^# ; bedtools intersect -a %s -b %s ;) > %s"%(vcf,vcf,' '.join([v for v in list_vcfs if v != vcf]),vcf.replace('.vcf','.intersect.vcf')),shell=True)
+        vcf = vcf.replace('.vcf','.intersect.vcf')
         subprocess.call('bcftools view %s -O z -o %s'%(vcf, vcf+'.gz'),shell=True)
         subprocess.call('bcftools index %s.gz'%vcf,shell=True)
-    subprocess.call('bcftools merge %s -O v --force-samples -o %s.gz'%(' '.join([vcf+'.gz' for vcf in list_vcfs]), vcf_out),shell=True)
+        list_vcfs2.append(vcf)
+    subprocess.call('bcftools merge %s -O v --force-samples -o %s.gz'%(' '.join([vcf+'.gz' for vcf in list_vcfs2]), vcf_out),shell=True)
     subprocess.call('bcftools view %s -O v -s ^%s -o %s'%(vcf_out+'.gz',excluded_species,vcf_out), shell=True)
 
 @begin.subcommand
@@ -675,14 +679,15 @@ def maf2vcf2(cns_config, reference_species, reference_fai_file, out_all_species,
         species = all_species_but_one
     if merge:
         subprocess.call('rm merged.maf',shell=True)
-        subprocess.call("cat %s | sed -e '/Anc/d;/#/d' > merged.maf"%(' '.join(mafFiles)),shell=True)
-    maf_idx = index_maf_2('merged.maf')
+        subprocess.call("(echo '##maf version=1'; ( cat %s | sed -e '/Anc/d;/#/d' ) ;) > merged.maf"%(' '.join(mafFiles)),shell=True)
+    subprocess.call('./mafStrander -m merged.maf --seq %s > positive.maf'%reference_species,shell=True)
+    maf_idx = index_maf_2('positive.maf')
     idxs = sorted(maf_idx.keys())
     #print maf_idx.keys()[0:10], maf_idx.values()[0:10]
     #count = 0
     #maf_sort_structure = []
     chunks = [idxs[i:i+50000] for i in range(0,len(idxs),50000)]
-    with open('merged.maf','r') as f, open('merged.new_coords.maf','w') as f2:
+    with open('positive.maf','r') as f, open('merged.new_coords.maf','w') as f2:
         for chunk in chunks:
             #print maf_idx[idx], idx
             #print f.read(maf_idx[idx] - idx)
