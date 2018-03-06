@@ -247,6 +247,38 @@ def output_Tree(aln_output_txt,aln_file, out_fname):
     #t.show(tree_style=ts)
     t.render(out_fname,tree_style = ts)
 
+@begin.subcommand
+def generate_consensus_tree(trees_in,tree_out,consensus_algorithm='majority',major_cutoff=0.5):
+    trees = Phylo.parse(trees_in,'newick')
+    if consensus_algorithm == 'strict':
+        tree = CS.strict_consensus(trees)
+    elif consensus_algorithm == 'majority':
+        tree = CS.majority_consensus(trees,float(major_cutoff))
+    else:
+        tree = CS.adam_consensus(trees)
+    Phylo.write(tree,tree_out,'newick')
+
+@begin.subcommand
+def get_support(trees_in,tree_final):
+    print tree_final
+    trees = Phylo.parse(trees_in,'newick')
+    tree_master = Phylo.parse(tree_final,'newick')
+    support_tree = CS.get_support(list(tree_master)[0],list(trees))
+    Phylo.write(support_tree,tree_final+'_support.nwk','newick')
+    with open(tree_final+'_support.nwk','r') as f:
+        tree = f.read()
+    final_branches = []
+    for branch in tree.split(':'):
+        if ')' in branch or '(' in branch or ',' in branch or ';' in branch:
+            final_branches.append(branch)
+        else:
+            final_branches[-1] += branch
+    with open(tree_final+'_support_corrected.nwk','w') as f:
+        f.write(':'.join(final_branches))
+
+    #Phylo.convert(tree_final+'_support.nex', 'nexus',tree_final+'_support.nwk', 'newick', )
+
+
 @begin.subcommand()
 def find_tree_lengths(tree_file):
     trees_gen = Phylo.parse(tree_file, 'newick')
@@ -323,6 +355,14 @@ def run_phyml(phylip_in,bootstrap):
     subprocess.call([phymlLine, '-i', phylip_in, '-s', 'BEST', '-q', '-b', bootstrap, '-m', 'GTR'])
 
 @begin.subcommand
+def run_fasttree(fasta_in,tree_out):
+    fasttreeLine = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/bin/ete3_apps/bin/FastTree'
+    #print fasttreeLine
+    #print(tree_out,os.path.abspath(fasta_in))
+    #print(fasttreeLine + ' -gtr -nt < ' + fasta_in + '> ' + tree_out)
+    subprocess.call(fasttreeLine + ' -gtr -nt < ' + fasta_in + ' > ' + tree_out, shell=True)
+
+@begin.subcommand
 def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, build_tree):
     #run_phyml(aln_syn,'1')
     if int(build_tree):
@@ -355,6 +395,37 @@ def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, 
 
 #########################################################################
 ############################ VCF FILTER WORK ############################
+
+@begin.subcommand
+def vcf2tree(vcf_in,tree_out,n_samples,n_bootstrap, final_tree):
+    tab_file = vcf2tab(vcf_in,vcf_in.replace('.vcf','.tab'))
+    vcf_in = os.path.abspath(vcf_in)
+    tree_out = os.path.abspath(tree_out)
+    if final_tree.endswith('.txt') or final_tree.endsith('.nwk') or final_tree.endswith('.nh'):
+        final_tree = os.path.abspath(final_tree)
+        print final_tree
+    else:
+        tab2fasta(tab_file,0,'./final_tree.fasta')
+        run_fasttree('./final_tree.fasta','./final_tree_all.nh')
+        final_tree = os.path.abspath('./final_tree_all.nh')
+    subprocess.call("export OPENBLAS_NUM_THREADS=1 && nextflow run tab2tree.nf --tab_file %s --tree_out %s --n_samples %s --n_bootstrap %s --tree_final %s"%(tab_file,tree_out,n_samples,n_bootstrap, final_tree),shell=True)
+
+@begin.subcommand
+def tab2fasta(tab_in,sample,fasta_out):
+    sample = int(sample)
+    df = pd.read_table(tab_in,header=0)
+    if sample:
+        df = df.sample(n=sample)
+    with open(fasta_out,'w') as f:
+        for col in list(df)[3:]:
+            species = col[col.find(']')+1:col.rfind(':')]
+            f.write('>%s\n%s\n'%(species,''.join((df[col].as_matrix())).replace('.','-')))
+    #print(tab_in,os.path.abspath(fasta_out))
+
+@begin.subcommand
+def vcf2tab(vcf_in,tab_out):
+    subprocess.call("bcftools query -Hf '%%CHROM\\t%%POS\\t%%REF[\\t%%TGT]\\n' -o %s %s"%(tab_out,vcf_in),shell=True)
+    return tab_out
 
 @begin.subcommand
 def generate_new_header(sort_vcf_in):
@@ -736,8 +807,6 @@ def maf2vcf2(cns_config, reference_species, reference_fai_file, out_all_species,
     subprocess.call('./maffilter param=maf_filter_config.bpp',shell=True)
     concat_vcf('vcfs/merged.vcf','vcfs/final.vcf')
     generate_new_header('vcfs/final.vcf')
-
-
 
 @begin.subcommand
 def index_maf(maf_file, ref_species):
