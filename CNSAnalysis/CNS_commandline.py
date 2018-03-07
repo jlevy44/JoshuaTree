@@ -15,6 +15,10 @@ from collections import Counter
 from bx.align import maf
 from bx import interval_index_file
 from itertools import combinations
+import shutil
+import dendropy
+from dendropy.calculate import treecompare
+
 
 
 ############################################################################################
@@ -213,6 +217,8 @@ def tree2matrix(tree_file,distance_matrix = 'distance_matrix.csv'):
             distance = tree.distance(i,j)
             df.set_value(i,j,distance)
             df.set_value(j,i,distance)
+    df_keys = sorted(list(df))
+    df = df.reindex(index=df_keys,columns=df_keys)
     df.to_csv(distance_matrix)
     return df
 
@@ -359,7 +365,6 @@ def reroot_Tree(tree_in,root_species,tree_out):
 
 @begin.subcommand
 def run_phyml(phylip_in,bootstrap, tree_out = '', fasta2phylip = 'Fasta2Phylip.pl', starting_tree = 'xxx'):
-    import shutil
     if not phylip_in.endswith('.phylip'):#phylip_in.endswith('.fasta') or phylip_in.endswith('.fa'): #FIXME can add biopython conversion
         subprocess.call(['perl', fasta2phylip, phylip_in, phylip_in.replace('fasta','phylip').replace('fa','phylip')])
         phylip_in = phylip_in.replace('fasta','phylip').replace('fa','phylip')
@@ -380,6 +385,14 @@ def run_fasttree(fasta_in,tree_out):
     #print(tree_out,os.path.abspath(fasta_in))
     #print(fasttreeLine + ' -gtr -nt < ' + fasta_in + '> ' + tree_out)
     subprocess.call(fasttreeLine + ' -gtr -nt < ' + fasta_in + ' > ' + tree_out, shell=True)
+    return tree_out
+
+@begin.subcommand
+def run_iqtree(fasta_in,tree_out):
+    iqtree_line = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/bin/ete3_apps/bin/iqtree'
+    subprocess.call('rm %s.ckp.gz'%fasta_in,shell=True)
+    subprocess.call(iqtree_line + ' -s %s -m GTR -nt AUTO'%fasta_in, shell=True)
+    shutil.copy(fasta_in+'.treefile',tree_out)
     return tree_out
 
 @begin.subcommand
@@ -418,40 +431,74 @@ def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, 
 ############################ MDS DETECTION OF HETEROGENOUS REGIONS ############################
 
 @begin.subcommand
-def local_tree_topology(vcf_in, n_snps_interval):
+def local_tree_topology(vcf_in, n_snps_interval, local_trees, RFDistance):
     from collections import defaultdict
     import seaborn as sns, matplotlib.pyplot as plt
     from sklearn.manifold import MDS
     import plotly.graph_objs as go
     import plotly.offline as py
-    tab_in = vcf2tab(vcf_in,vcf_in.replace('.vcf','.tab'))
-    tab_df = pd.read_table(tab_in,header=0)
-    tab_df['[2]POS'] = tab_df['[2]POS'].as_matrix().astype(np.int)
-    #print tab_df
+    RFDistance = int(RFDistance)
+    if RFDistance:
+        tns = dendropy.TaxonNamespace()
+    if not os.path.exists('trees/'):
+        os.mkdir('trees/')
     cluster_data = defaultdict(list)
-    open('local_trees.nwk','w').close()
-    for index, df in tab_df.groupby(np.arange(len(tab_df))//int(n_snps_interval)):
-        #print df
-        chroms = set(df['# [1]CHROM'])
-        if len(chroms) == 1:
-            interval_data = '_'.join([list(chroms)[0],str(np.min(df['[2]POS'])),str(np.max(df['[2]POS']))])
-            tab2fasta('','','./temp.fa', df = df)
-            tree = run_fasttree('./temp.fa','./temp.nwk')
-            with open('local_trees.nwk','a') as f1, open('./temp.nwk','r') as f2:
-                f1.write('%s\t%s\n'%(interval_data,f2.read().strip('\n')))
-            # FIXME remember to change samples names  eg. [5]Bhyb004:GT in tab form
-            cluster_data[interval_data] = tree2matrix(tree).as_matrix()
+    if not int(local_trees):
+        tab_in = vcf2tab(vcf_in,vcf_in.replace('.vcf','.tab'))
+        tab_df = pd.read_table(tab_in,header=0)
+        tab_df['[2]POS'] = tab_df['[2]POS'].as_matrix().astype(np.int)
+        #print tab_df
+        open('local_trees.nwk','w').close()
+        for index, df in tab_df.groupby(np.arange(len(tab_df))//int(n_snps_interval)):
+            #print df
+            chroms = set(df['# [1]CHROM'])
+            if len(chroms) == 1:
+                interval_data = '_'.join([list(chroms)[0],str(np.min(df['[2]POS'])),str(np.max(df['[2]POS']))])
+                tab2fasta('','','./temp.fa', df = df)
+                tree = run_iqtree('./temp.fa','./temp.nwk')#run_fasttree('./temp.fa','./temp.nwk')
+                with open('local_trees.nwk','a') as f1, open('./temp.nwk','r') as f2:
+                    f1.write('%s\t%s\n'%(interval_data,f2.read().strip('\n')))
+                # FIXME remember to change samples names  eg. [5]Bhyb004:GT in tab form
+                if RFDistance:
+                    shutil.copy('temp.nwk','trees/'+interval_data+'.nwk')
+                else:
+                    cluster_data[interval_data] = np.nan_to_num(tree2matrix(tree).as_matrix())
+    else:
+        if not RFDistance:
+            for interval, tree in zip(os.popen("awk '{print $1}' local_trees.nwk").read().splitlines(),os.popen("awk '{print $2}' local_trees.nwk").read().splitlines()):
+                with open('temp.nwk','w') as f:
+                    f.write(tree)
+                cluster_data[interval] = np.nan_to_num(tree2matrix('temp.nwk').as_matrix())
+    new_keys = os.popen("awk '{print $1}' %s"%('local_trees.nwk')).read().splitlines()
+    if RFDistance:
+        for interval_data in new_keys:
+            cluster_data[interval_data] = tree.get_from_path('trees/'+interval_data+'.nwk','newick',taxon_namespace=tns)
+            cluster_data[interval_data].encode_bipartitions()
     cluster_keys = sorted(cluster_data.keys())
     df = pd.DataFrame(np.nan, index=cluster_keys, columns=cluster_keys)
     for i,j in list(combinations(cluster_keys,r=2)) + zip(cluster_keys,cluster_keys):
         if i == j:
             df.set_value(i,j,0)
         if i != j:
-            dissimilarity = np.linalg.norm(cluster_data[i]-cluster_data[j],None)
+            if RFDistance:
+                dissimilarity = treecompare.symmetric_difference(cluster_data[i], cluster_data[j])
+            else:
+                dissimilarity = np.linalg.norm(cluster_data[i]-cluster_data[j],None)
             df.set_value(i,j,dissimilarity)
             df.set_value(j,i,dissimilarity)
-
-    df = df.reindex(index=sorted(list(df)),columns=sorted(list(df))) # FIXME sort by chromosome and position, integer... find a way, maybe feed to new dataframe and sort that way, break labels by _ and sort by [0,1] and not [2]
+    """
+    keys_df = pd.DataFrame(np.array([key.split('_') for key in list(df)]))
+    print keys_df
+    keys_df[1] = keys_df[1].as_matrix().astype(np.int)
+    keys_df = keys_df.sort_values(['0','1'])
+    print keys_df
+    keys_df[1] = keys_df[1].as_matrix().astype(str)
+    print keys_df
+    new_keys = np.apply_along_axis(lambda x: '_'.join(x),axis=1,arr=keys_df.as_matrix()).tolist()
+    print new_keys
+     # FIXME sort by chromosome and position, integer... find a way, maybe feed to new dataframe and sort that way, break labels by _ and sort by [0,1] and not [2]
+    """
+    df = df.reindex(index=new_keys,columns=new_keys)
     df.to_csv('dissimilarity_matrix_local_pca.csv')
     plt.figure()
     sns.heatmap(df)
@@ -466,7 +513,7 @@ def local_tree_topology(vcf_in, n_snps_interval):
     np.save('local_pca_MDS_transform.npy',transformed_data)
     pickle.dump(list(df.index.values),open('local_pca_window_names.p','wb'))
     plots = []
-    plots.append(go.Scatter3d(x=transformed_data[:,0],y=transformed_data[:,1],z=transformed_data[:,2],text=list(df.index.values),name='Regions'))
+    plots.append(go.Scatter3d(x=transformed_data[:,0],y=transformed_data[:,1],z=transformed_data[:,2],text=list(df.index.values), mode='markers',marker=dict(color='blue', size=5),name='Regions'))
     py.plot(go.Figure(data=plots),filename='Local_Topology_Differences.html',auto_open=False)
 
 #########################################################################
