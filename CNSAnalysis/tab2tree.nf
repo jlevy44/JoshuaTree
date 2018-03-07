@@ -24,6 +24,9 @@ tree_out = params.tree_out;
 n_samples = params.n_samples;
 n_bootstrap = params.n_bootstrap.asType(Integer);
 tree_final = params.tree_final;
+phyml = params.phyml.asType(Integer);
+fasta2phylip = params.fasta2phylip;
+starting_tree = params.starting_tree;
 
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -33,7 +36,7 @@ tab_bootstraps = Channel.fromPath(tab_file)
 
 process generate_bootstrap_fastas {
 
-    echo true
+    echo false
 
     input:
     each x from 1..n_bootstrap
@@ -55,7 +58,7 @@ process generate_bootstrap_fastas {
 
 process generate_bootstrap_trees {
 
-    echo true
+    echo false
     cpus 3
 
     input:
@@ -65,7 +68,10 @@ process generate_bootstrap_trees {
     file trees
 
     script:
-    """python ../../../CNS_commandline.py run_fasttree $fasta_bootstraps trees"""
+    if(phyml == 1)
+        """python ../../../CNS_commandline.py run_phyml --tree-out trees --fasta2phylip ${fasta2phylip} --starting-tree ${starting_tree} $fasta_bootstraps 1"""
+    else
+        """python ../../../CNS_commandline.py run_fasttree $fasta_bootstraps trees"""
 
 
 }

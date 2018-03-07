@@ -258,6 +258,17 @@ def generate_consensus_tree(trees_in,tree_out,consensus_algorithm='majority',maj
         tree = CS.adam_consensus(trees)
     Phylo.write(tree,tree_out,'newick')
 
+    with open(tree_out,'r') as f:
+        tree = f.read()
+    final_branches = []
+    for branch in tree.split(':'):
+        if ')' in branch or '(' in branch or ',' in branch or ';' in branch:
+            final_branches.append(branch)
+        else:
+            final_branches[-1] += branch
+    with open(tree_out+'_corrected.nwk','w') as f:
+        f.write(':'.join(final_branches))
+
 @begin.subcommand
 def get_support(trees_in,tree_final):
     print tree_final
@@ -347,12 +358,20 @@ def reroot_Tree(tree_in,root_species,tree_out):
     t.write(tree_out)
 
 @begin.subcommand
-def run_phyml(phylip_in,bootstrap):
-    if phylip_in.endswith('.fasta') or phylip_in.endswith('.fa'):
-        subprocess.call(['perl', 'Fasta2Phylip.pl', phylip_in, phylip_in.replace('fasta','phylip').replace('fa','phylip')])
+def run_phyml(phylip_in,bootstrap, tree_out = '', fasta2phylip = 'Fasta2Phylip.pl', starting_tree = 'xxx'):
+    import shutil
+    if not phylip_in.endswith('.phylip'):#phylip_in.endswith('.fasta') or phylip_in.endswith('.fa'): #FIXME can add biopython conversion
+        subprocess.call(['perl', fasta2phylip, phylip_in, phylip_in.replace('fasta','phylip').replace('fa','phylip')])
         phylip_in = phylip_in.replace('fasta','phylip').replace('fa','phylip')
     phymlLine = next(path for path in sys.path if 'conda/' in path and '/lib/' in path).split('/lib/')[0]+'/bin/ete3_apps/bin/phyml'
-    subprocess.call([phymlLine, '-i', phylip_in, '-s', 'BEST', '-q', '-b', bootstrap, '-m', 'GTR'])
+    if os.path.exists(starting_tree):
+        starting_tree = ['-u',starting_tree]
+    else:
+        starting_tree = []
+    subprocess.call([phymlLine, '-i', phylip_in, '-s', 'BEST', '-q', '-b', bootstrap, '-m', 'GTR']+starting_tree)
+    if tree_out:
+        shutil.copy(phylip_in+'_phyml_tree.txt',tree_out)
+
 
 @begin.subcommand
 def run_fasttree(fasta_in,tree_out):
@@ -361,6 +380,7 @@ def run_fasttree(fasta_in,tree_out):
     #print(tree_out,os.path.abspath(fasta_in))
     #print(fasttreeLine + ' -gtr -nt < ' + fasta_in + '> ' + tree_out)
     subprocess.call(fasttreeLine + ' -gtr -nt < ' + fasta_in + ' > ' + tree_out, shell=True)
+    return tree_out
 
 @begin.subcommand
 def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, build_tree):
@@ -393,33 +413,105 @@ def omega_analysis(aln_syn,aln_non_syn,phyml_fasttree, reference, list_species, 
     print neutral_tree.get_evol_model('fb')
     print non_syn_tree.get_evol_model('fb')
 
+
+###############################################################################################
+############################ MDS DETECTION OF HETEROGENOUS REGIONS ############################
+
+@begin.subcommand
+def local_tree_topology(vcf_in, n_snps_interval):
+    from collections import defaultdict
+    import seaborn as sns, matplotlib.pyplot as plt
+    from sklearn.manifold import MDS
+    import plotly.graph_objs as go
+    import plotly.offline as py
+    tab_in = vcf2tab(vcf_in,vcf_in.replace('.vcf','.tab'))
+    tab_df = pd.read_table(tab_in,header=0)
+    tab_df['[2]POS'] = tab_df['[2]POS'].as_matrix().astype(np.int)
+    #print tab_df
+    cluster_data = defaultdict(list)
+    open('local_trees.nwk','w').close()
+    for index, df in tab_df.groupby(np.arange(len(tab_df))//int(n_snps_interval)):
+        #print df
+        chroms = set(df['# [1]CHROM'])
+        if len(chroms) == 1:
+            interval_data = '_'.join([list(chroms)[0],str(np.min(df['[2]POS'])),str(np.max(df['[2]POS']))])
+            tab2fasta('','','./temp.fa', df = df)
+            tree = run_fasttree('./temp.fa','./temp.nwk')
+            with open('local_trees.nwk','a') as f1, open('./temp.nwk','r') as f2:
+                f1.write('%s\t%s\n'%(interval_data,f2.read().strip('\n')))
+            # FIXME remember to change samples names  eg. [5]Bhyb004:GT in tab form
+            cluster_data[interval_data] = tree2matrix(tree).as_matrix()
+    cluster_keys = sorted(cluster_data.keys())
+    df = pd.DataFrame(np.nan, index=cluster_keys, columns=cluster_keys)
+    for i,j in list(combinations(cluster_keys,r=2)) + zip(cluster_keys,cluster_keys):
+        if i == j:
+            df.set_value(i,j,0)
+        if i != j:
+            dissimilarity = np.linalg.norm(cluster_data[i]-cluster_data[j],None)
+            df.set_value(i,j,dissimilarity)
+            df.set_value(j,i,dissimilarity)
+
+    df = df.reindex(index=sorted(list(df)),columns=sorted(list(df))) # FIXME sort by chromosome and position, integer... find a way, maybe feed to new dataframe and sort that way, break labels by _ and sort by [0,1] and not [2]
+    df.to_csv('dissimilarity_matrix_local_pca.csv')
+    plt.figure()
+    sns.heatmap(df)
+    plt.savefig('dissimilarity_matrix_local_pca.png',dpi=300)
+    # FIXME indent below for local trees option
+
+    local_pca_dissimilarity = df.as_matrix()
+    local_pca_dissimilarity = np.nan_to_num(local_pca_dissimilarity)
+    #print np.max(local_pca_similarity)-local_pca_similarity
+    mds = MDS(n_components=3,dissimilarity='precomputed')
+    transformed_data = mds.fit_transform(local_pca_dissimilarity)#np.max(local_pca_similarity)-local_pca_similarity
+    np.save('local_pca_MDS_transform.npy',transformed_data)
+    pickle.dump(list(df.index.values),open('local_pca_window_names.p','wb'))
+    plots = []
+    plots.append(go.Scatter3d(x=transformed_data[:,0],y=transformed_data[:,1],z=transformed_data[:,2],text=list(df.index.values),name='Regions'))
+    py.plot(go.Figure(data=plots),filename='Local_Topology_Differences.html',auto_open=False)
+
 #########################################################################
 ############################ VCF FILTER WORK ############################
 
 @begin.subcommand
-def vcf2tree(vcf_in,tree_out,n_samples,n_bootstrap, final_tree):
+def snps_from_fasta(fasta_in,vcf_out,fasta_out,monomorphic):
+    subprocess.call('snp-sites -v%s -o %s %s'%('b' if int(monomorphic) else '',vcf_out,fasta_in),shell=True)
+    subprocess.call('snp-sites -m%s -o %s %s'%('b' if int(monomorphic) else '',fasta_out,fasta_in),shell=True)
+
+@begin.subcommand
+def vcf2tree(vcf_in,tree_out,n_samples,n_bootstrap, final_tree, phyml, starting_tree):
     tab_file = vcf2tab(vcf_in,vcf_in.replace('.vcf','.tab'))
     vcf_in = os.path.abspath(vcf_in)
     tree_out = os.path.abspath(tree_out)
-    if final_tree.endswith('.txt') or final_tree.endsith('.nwk') or final_tree.endswith('.nh'):
+    print final_tree
+    if starting_tree.endswith('.txt') or starting_tree.endswith('.nwk') or starting_tree.endswith('.nh'):
+        starting_tree = os.path.abspath(starting_tree)
+    else:
+        starting_tree = 'xxx'
+    if final_tree.endswith('.txt') or final_tree.endswith('.nwk') or final_tree.endswith('.nh'):
         final_tree = os.path.abspath(final_tree)
         print final_tree
     else:
         tab2fasta(tab_file,0,'./final_tree.fasta')
-        run_fasttree('./final_tree.fasta','./final_tree_all.nh')
+        if int(phyml):
+            run_phyml(phylip_in='./final_tree.fasta',bootstrap='1', tree_out = './final_tree_all.nh', fasta2phylip = 'Fasta2Phylip.pl', starting_tree = starting_tree)
+        else:
+            run_fasttree('./final_tree.fasta','./final_tree_all.nh')
         final_tree = os.path.abspath('./final_tree_all.nh')
-    subprocess.call("export OPENBLAS_NUM_THREADS=1 && nextflow run tab2tree.nf --tab_file %s --tree_out %s --n_samples %s --n_bootstrap %s --tree_final %s"%(tab_file,tree_out,n_samples,n_bootstrap, final_tree),shell=True)
+    fasta2phylipLine = os.path.abspath('Fasta2Phylip.pl') if int(phyml) else 'Fasta2Phylip.pl'
+
+    subprocess.call("export OPENBLAS_NUM_THREADS=1 && nextflow run tab2tree.nf --tab_file %s --tree_out %s --n_samples %s --n_bootstrap %s --tree_final %s --phyml %s --fasta2phylip %s --starting_tree %s"%(tab_file,tree_out,n_samples,n_bootstrap, final_tree, phyml, fasta2phylipLine,starting_tree),shell=True)
 
 @begin.subcommand
-def tab2fasta(tab_in,sample,fasta_out):
-    sample = int(sample)
-    df = pd.read_table(tab_in,header=0)
-    if sample:
-        df = df.sample(n=sample)
+def tab2fasta(tab_in,sample,fasta_out, df = ''):
+    if not list(df):
+        sample = int(sample)
+        df = pd.read_table(tab_in,header=0)
+        if sample:
+            df = df.sample(n=sample)
     with open(fasta_out,'w') as f:
         for col in list(df)[3:]:
             species = col[col.find(']')+1:col.rfind(':')]
-            f.write('>%s\n%s\n'%(species,''.join((df[col].as_matrix())).replace('.','-')))
+            f.write('>%s\n%s\n'%(species,''.join((df[col].as_matrix())).replace('.','-').replace('*','-')))
     #print(tab_in,os.path.abspath(fasta_out))
 
 @begin.subcommand
